@@ -1,0 +1,122 @@
+name: release
+
+# Builds Nintendall-Setup.exe and attaches it, with a SHA-256 checksum, to a
+# GitHub Release.  Tag a version (v0.1.0, v3.0.0, ...) to cut a release.
+#
+# This workflow does NOT sign anything by default.  See "Signing" below for how
+# to switch on a CA-issued signature, which is what lets people install the
+# build without touching Smart App Control.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build installer
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The vendored emulator trees are large; a shallow clone keeps this
+          # reasonably quick.
+          fetch-depth: 1
+
+      # The project builds with MinGW-w64 + CMake + Ninja.  There is no MSVC
+      # path: CMakePresets.json pins CMAKE_C_COMPILER/CMAKE_CXX_COMPILER to
+      # gcc/g++, and tools/build.ps1 looks for the same toolchain.
+      - name: Install build tools
+        shell: pwsh
+        run: |
+          choco install -y ninja cmake mingw --no-progress
+          # Refresh PATH so the freshly installed tools are visible.
+          $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+                      [System.Environment]::GetEnvironmentVariable('Path','User')
+          "cmake:  $(cmake --version | Select-Object -First 1)"
+          "ninja:  $(ninja --version)"
+          "gcc:    $(gcc --version | Select-Object -First 1)"
+        # Chocolatey appends to PATH for later steps automatically, but the
+        # verification above needs the updated value in this same step.
+
+      - name: Cache the CMake build tree
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: ${{ runner.os }}-all-cores-${{ hashFiles('CMakePresets.json', 'CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-all-cores-
+
+      - name: Build the emulator
+        shell: pwsh
+        run: ./tools/build.ps1 -Preset all-cores
+
+      - name: Package the installer
+        shell: pwsh
+        # -NoSign: no CA certificate is configured yet.  See "Signing".
+        run: ./tools/make-setup.ps1 -SkipBuild -NoSign
+
+      # ---------------------------------------------------------------------
+      # Signing
+      #
+      # Until a certificate exists, releases are unsigned.  That means people
+      # whose Smart App Control is on cannot run the installer, and everyone
+      # else has to click through a SmartScreen warning.
+      #
+      # Once you have a CA-issued certificate, add the steps below.  Signing
+      # runs after packaging, because the signature covers the final bytes.
+      #
+      # Option A - SignPath (free for open source): they sign inside
+      # tools/sign.ps1 through their CLI.  Add SIGN_PATH_API_TOKEN to the
+      # repository secrets and drop the -NoSign flag above.  Nothing else
+      # changes.
+      #
+      # Option B - Your own certificate: install tools/import-cert.ps1, store
+      # the .pfx as a repository secret named CODE_SIGN_PFX, and drop the
+      # -NoSign flag above so make-setup.ps1 signs the finished installer.
+      # ---------------------------------------------------------------------
+
+      - name: Verify the package before publishing
+        shell: pwsh
+        run: ./tools/verify-setup.ps1
+
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $file = 'Nintendall-Setup.exe'
+          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+          "$hash  $file" | Set-Content -Path "$file.sha256" -Encoding ascii
+          Write-Host "SHA-256: $hash"
+
+      - name: Package a portable copy
+        shell: pwsh
+        # A plain ZIP sidesteps installer-related warnings entirely.
+        run: Compress-Archive -Path build\stage\* -DestinationPath Nintendall-Portable.zip -Force
+
+      - name: Upload to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          gh release create $tag `
+            Nintendall-Setup.exe `
+            Nintendall-Setup.exe.sha256 `
+            Nintendall-Portable.zip `
+            --generate-notes `
+            --title "Nintendall $tag"
+
+      - name: Upload as an artifact when not tagging
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nintendall-build
+          path: |
+            Nintendall-Setup.exe
+            Nintendall-Setup.exe.sha256
+            Nintendall-Portable.zip

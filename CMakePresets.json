@@ -1,0 +1,55 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "Release (NES + SNES + GB/GBC/GBA)",
+      "description": "The default shipping build: NES (Nestopia), SNES (bsnes) and GB/GBC/GBA (mGBA).",
+      "cacheVariables": { "BUILD_SMOKE_TEST": "OFF" }
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "displayName": "Debug (NES + SNES + GB/GBC/GBA)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "tests",
+      "inherits": "base",
+      "displayName": "Release + headless smoke test",
+      "description": "Adds the nintendall_test console binary.",
+      "cacheVariables": { "BUILD_SMOKE_TEST": "ON" }
+    },
+    {
+      "name": "all-cores",
+      "inherits": "base",
+      "displayName": "Release, every core enabled",
+      "description": "Also enables the NDS, N64, GameCube/Wii and 3DS adapters.",
+      "cacheVariables": {
+        "BUILD_DS_CORE": "ON",
+        "BUILD_N64_CORE": "ON",
+        "BUILD_GCWII_CORE": "ON",
+        "BUILD_3DS_CORE": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release",   "configurePreset": "release" },
+    { "name": "debug",     "configurePreset": "debug" },
+    { "name": "tests",     "configurePreset": "tests" },
+    { "name": "all-cores", "configurePreset": "all-cores" }
+  ]
+}

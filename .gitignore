@@ -1,0 +1,82 @@
+# ---- build output ----------------------------------------------------------
+build*/
+out*/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+CPackConfig.cmake
+CPackSourceConfig.cmake
+cmake_install.cmake
+install_manifest.txt
+*.ninja
+.ninja_deps
+.ninja_log
+compile_commands.json
+.cache/
+
+# ---- compiled objects / binaries -------------------------------------------
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.map
+
+# ---- vendored upstream emulator sources ------------------------------------
+# These are large third-party trees. They are pulled in on demand with
+# tools/vendor-emulators.ps1 (or .sh); don't commit them.
+cores/*/upstream/
+
+# ---- signing material -------------------------------------------------------
+# NEVER commit a private key or a .pfx.  Losing one is recoverable; leaking one
+# means anyone can sign as you until you revoke the certificate.
+*.pfx
+*.p12
+*.jks
+*.keystore
+*.pvk
+*.cer
+*.crt
+*signing*.pem
+
+# ---- packaged release artefacts ---------------------------------------------
+# Produced by tools/make-setup.ps1; these belong in GitHub Releases, not in git.
+Nintendall-Setup.exe
+Nintendall-Portable.zip
+*-Release.zip
+*.sha256
+package.bin
+payload.rc
+
+# ---- emulator runtime data -------------------------------------------------
+# Never publish somebody's game saves.  *.sra/.eep/.fla are the N64 formats.
+saves/
+*.sav
+*.srm
+*.uesv
+*.state
+*.sra
+*.eep
+*.fla
+*.mpk
+rom-cache/
+_restore/
+
+# ---- internal development notes ---------------------------------------------
+# Scratch notes kept while building the project; not part of the release.
+CONTEXT_checkpoint.md
+
+# ---- editors / OS ----------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
