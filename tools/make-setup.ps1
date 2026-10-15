@@ -89,7 +89,10 @@ Sign-IfPossible $appExe
 # -----------------------------------------------------------------------------
 # Libraries must follow the source file on the command line, or the linker
 # drops them before it has seen the objects that need them.
-$gxxFlags = @('-O2', '-std=c++17', '-municode')
+# -static matters: without it the installer imports libstdc++-6.dll and
+# libgcc_s_seh-1.dll, and then fails to start on any machine that does not
+# have MinGW installed ("libstdc++-6.dll is missing").
+$gxxFlags = @('-O2', '-std=c++17', '-municode', '-static')
 $gxxLibs  = @(
     '-luser32', '-lgdi32', '-lshell32', '-lshlwapi',
     '-lole32', '-lcomctl32', '-ladvapi32', '-luuid'

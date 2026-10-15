@@ -173,6 +173,34 @@ foreach ($r in $records | Where-Object { -not $_.IsDir }) {
 }
 
 # -----------------------------------------------------------------------------
+# Self-contained check
+#
+# Guard against the single-executable promise quietly breaking.  A MinGW build
+# that is not linked statically imports libstdc++-6.dll and libgcc_s_seh-1.dll,
+# and then dies on any machine without MinGW installed with
+# "libstdc++-6.dll is missing".  Scanning for the names avoids needing a PE
+# parser or objdump.
+# -----------------------------------------------------------------------------
+$forbidden = @('libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll', 'libssp-0.dll')
+$toScan = @($SetupExe) + @($records | Where-Object { -not $_.IsDir -and $_.Path -match '\.exe$' } |
+                                  ForEach-Object { Join-Path $scratch $_.Path })
+$selfContained = $true
+foreach ($f in $toScan) {
+    if (-not (Test-Path $f)) { continue }
+    $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($f))
+    foreach ($bad in $forbidden) {
+        if ($text.Contains($bad)) {
+            Write-Host ("  self-contained: FAIL - {0} imports {1}" -f (Split-Path -Leaf $f), $bad) -ForegroundColor Red
+            $errors += "$(Split-Path -Leaf $f) imports $bad, so it will not run on a clean machine"
+            $selfContained = $false
+        }
+    }
+}
+if ($selfContained) {
+    Write-Host 'self-contained : no MinGW runtime DLL imports' -ForegroundColor DarkGreen
+}
+
+# -----------------------------------------------------------------------------
 # Signature
 # -----------------------------------------------------------------------------
 Write-Host ''

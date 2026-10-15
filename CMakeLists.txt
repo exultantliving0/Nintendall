@@ -62,6 +62,15 @@ if(WIN32)
     if(MSVC)
         add_compile_options(/W3 /MP /bigobj)
     endif()
+
+    # Link the MinGW runtime statically.  Without this the executables import
+    # libgcc_s_seh-1.dll and libstdc++-6.dll, which exist only on a machine
+    # that has MinGW installed: the app then refuses to start anywhere else
+    # with "libstdc++-6.dll is missing".  Only Windows' own DLLs stay dynamic.
+    if(MINGW)
+        add_compile_options(-static-libgcc -static-libstdc++)
+        add_link_options(-static)
+    endif()
 elseif(UNIX)
     list(APPEND PLATFORM_LIBS dl pthread m)
     if(APPLE)
