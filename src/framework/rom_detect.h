@@ -50,6 +50,10 @@ const char* emu_console_name(EmuConsoleType console);
 // Get a short, filesystem-friendly folder name for a console's saves/states.
 const char* emu_console_folder_name(EmuConsoleType console);
 
+// The aspect ratio this console's picture should be displayed at (width/height).
+// Returns 0.0 when the framebuffer's own ratio should be used instead.
+double emu_console_display_aspect(EmuConsoleType console);
+
 // NES: iNES, NES 2.0, UNIF headers
 int emu_detect_nes(const uint8_t* data, size_t size, EmuDetectResult* result);
 

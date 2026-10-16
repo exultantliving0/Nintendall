@@ -589,3 +589,25 @@ const char* emu_console_folder_name(EmuConsoleType console) {
         default:                          return "other";
     }
 }
+
+// The aspect ratio a console's picture should be displayed at.
+//
+// This is deliberately NOT the aspect of the raw framebuffer.  The N64 VI
+// emits a 640x625 buffer for a 640x480 picture - the extra rows are blanking
+// - so using the buffer's own ratio (1.02) squashes the image vertically.
+// These are the shapes a CRT of the era actually displayed.
+//
+// Returns width/height; 0 means "no opinion, use the framebuffer's own ratio".
+double emu_console_display_aspect(EmuConsoleType console) {
+    switch (console) {
+        case EMU_CONSOLE_NINTENDO_64:      return 4.0 / 3.0;
+        case EMU_CONSOLE_NES:              return 4.0 / 3.0;
+        case EMU_CONSOLE_SNES:             return 4.0 / 3.0;
+        case EMU_CONSOLE_NINTENDO_DS:      return 4.0 / 3.0;
+        case EMU_CONSOLE_GAMECUBE:         return 4.0 / 3.0;
+        case EMU_CONSOLE_GAMEBOY:          return 10.0 / 9.0;   // square pixels
+        case EMU_CONSOLE_GAMEBOY_COLOR:    return 10.0 / 9.0;
+        case EMU_CONSOLE_GAMEBOY_ADVANCE:  return 3.0 / 2.0;    // 240x160
+        default:                           return 0.0;
+    }
+}

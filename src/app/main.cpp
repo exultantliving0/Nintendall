@@ -891,14 +891,35 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             EnterCriticalSection(&g_video_cs);
             if (g_frame_w > 0 && g_frame_h > 0 && !g_frame.empty()) {
-                double aspect = (double)g_frame_w / (double)g_frame_h;
-                // Prefer correct aspect ratio for N64 (native ~4:3, often 320x240 core output; mupen64plus outputs 640x480 etc)
-                // but keep general behavior; N64 cores typically output 640x480 or 320x240 scaled by VI
+                // The target display ratio for this console, falling back to the
+                // framebuffer's own ratio for anything not listed.
+                double want = emu_console_display_aspect(g_console);
+                if (want <= 0.0) want = (double)g_frame_w / (double)g_frame_h;
+
+                // Some cores hand back a buffer that includes blanking rows - the
+                // N64 VI emits 640x625 for a 640x480 picture.  Stretching the
+                // whole buffer squashes the image vertically, so crop away any
+                // rows beyond the target ratio first.
+                int sx = 0, sy = 0, sw = g_frame_w, sh = g_frame_h;
+                const double buf_ratio = (double)sw / (double)sh;
+                if (buf_ratio < want) {
+                    // Buffer is too tall: keep the middle of the picture.
+                    sh = (int)((double)sw / want + 0.5);
+                    if (sh > g_frame_h) sh = g_frame_h;
+                    sy = (g_frame_h - sh) / 2;
+                } else if (buf_ratio > want) {
+                    // Buffer is too wide: keep the middle horizontally.
+                    sw = (int)((double)sh * want + 0.5);
+                    if (sw > g_frame_w) sw = g_frame_w;
+                    sx = (g_frame_w - sw) / 2;
+                }
+
+                // Fit the cropped picture into the window at the target ratio.
                 int dw = cw;
-                int dh = (int)(dw / aspect);
+                int dh = (int)(dw / want + 0.5);
                 if (dh > ch) {
                     dh = ch;
-                    dw = (int)(dh * aspect);
+                    dw = (int)(dh * want + 0.5);
                 }
                 int dx = (cw - dw) / 2;
                 int dy = (ch - dh) / 2;
@@ -913,7 +934,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 bmi.bmiHeader.biCompression = BI_RGB;
 
                 SetStretchBltMode(dc, COLORONCOLOR);
-                StretchDIBits(dc, dx, dy, dw, dh, 0, 0, g_frame_w, g_frame_h,
+                StretchDIBits(dc, dx, dy, dw, dh, sx, sy, sw, sh,
                               g_frame.data(), &bmi, DIB_RGB_COLORS, SRCCOPY);
             }
             LeaveCriticalSection(&g_video_cs);

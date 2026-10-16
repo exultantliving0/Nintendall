@@ -214,8 +214,11 @@ if(NOT NASM_EXE)
         NO_DEFAULT_PATH)
 endif()
 
-if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64"
-   AND NASM_EXE)
+# Toggleable so the dynarec can be A/B tested against the C interpreter.
+option(N64_DYNAREC "Build the x86-64 R4300 dynarec (much faster, needs nasm)" ON)
+
+if(N64_DYNAREC AND CMAKE_SIZEOF_VOID_P EQUAL 8
+   AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64" AND NASM_EXE)
 
     set(ASM_DEFINES_HDR "${CMAKE_CURRENT_BINARY_DIR}/asm_defines_nasm.h")
     set(DYNA_START_OBJ "${CMAKE_CURRENT_BINARY_DIR}/dyna_start_x86_64.o")
@@ -256,9 +259,9 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|
     message(STATUS "N64: x86-64 dynarec enabled (nasm: ${NASM_EXE})")
 else()
     message(WARNING
-        "N64: x86-64 dynarec DISABLED - nasm was not found or this is not "
-        "x86-64. The R4300 will use the C interpreter, which is several times "
-        "slower and causes stutter. Install NASM and reconfigure.")
+        "N64: x86-64 dynarec DISABLED (N64_DYNAREC=${N64_DYNAREC}, nasm found="
+        "${NASM_EXE}, arch=${CMAKE_SYSTEM_PROCESSOR}). The R4300 falls back to "
+        "the C interpreter, which is several times slower and causes stutter.")
 endif()
 
 # -----------------------------------------------------------------------------
