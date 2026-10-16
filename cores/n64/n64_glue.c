@@ -103,6 +103,12 @@ void n64_rsp_rom_closed(void);
 #define N64_AUDIO_SRC_FRAMES  8192u    /* most native frames we consume at once */
 #define N64_AUDIO_OUT_FRAMES  16384u   /* resampled output scratch size */
 
+/* Where the drift correction aims.  The ring is drained once per emulated
+ * frame, so this is a few frames of slack - not a fraction of the whole 1.36 s
+ * buffer, which would leave the correction pinned at its limit and permanently
+ * skew the resampling ratio. */
+#define N64_DRIFT_TARGET_FRAMES 4096u
+
 /* ------------------------------------------------------------------------- */
 /* State                                                                     */
 /* ------------------------------------------------------------------------- */
@@ -416,17 +422,21 @@ static void audio_convert_and_queue(unsigned frames)
 
     /* Drift correction.
      *
-     * The AI's sample rate comes straight out of the emulated registers, and
-     * the N64's audio and video clocks are not an exact multiple of 48 kHz.
-     * Resampling with a fixed ratio therefore loses or gains a few samples a
-     * second, and the ring slowly drifts: run long enough and it either fills
-     * and starts dropping the oldest audio (pitch jumps) or empties and leaves
-     * gaps.  Nudging the ratio by a fraction of a percent towards the middle of
-     * the ring keeps it steady without being audible.
+     * The AI's sample rate comes out of the emulated registers, and the N64's
+     * audio and video clocks are not an exact multiple of 48 kHz.  Resampling
+     * with a fixed ratio therefore loses or gains a few samples a second, and
+     * the ring slowly drifts: run long enough and it either fills and starts
+     * dropping the oldest audio (pitch jumps) or empties and leaves gaps.
+     *
+     * The correction is a nudge towards the middle of the ring.  The target has
+     * to be small and realistic, though: this ring is drained once per emulated
+     * frame, so it only ever holds a frame or two.  Aiming at a fraction of the
+     * whole buffer leaves the correction pinned at its limit constantly, which
+     * skews the ratio permanently instead of correcting anything.
      */
     {
         unsigned count;
-        const unsigned target = N64_AUDIO_RING_FRAMES / 4u;   /* ~340 ms */
+        const unsigned target = N64_DRIFT_TARGET_FRAMES;
         double want = 1.0;
 
         EnterCriticalSection(&s_lock);
@@ -435,12 +445,11 @@ static void audio_convert_and_queue(unsigned frames)
 
         /* A larger step emits fewer output frames per input frame, so the ring
          * fills; a smaller one drains it.  A ring that is too full therefore
-         * wants a smaller step and a ring that is too empty wants a larger one.
-         */
-        if      (count > target * 2u)   want = 0.9960;
-        else if (count > target)        want = 0.9985;
-        else if (count < target / 2u)   want = 1.0040;
-        else if (count < target)        want = 1.0015;
+         * wants a smaller step and a ring that is too empty wants a larger one. */
+        if      (count > target * 2u)   want = 0.9970;
+        else if (count > target)        want = 0.9990;
+        else if (count < target / 4u)   want = 1.0030;
+        else if (count < target / 2u)   want = 1.0010;
 
         /* Ease towards the target rather than stepping, so the correction is
          * not itself audible as a pitch wobble. */

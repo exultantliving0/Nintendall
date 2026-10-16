@@ -326,20 +326,23 @@ static void AudioPump() {
     if (!g_waveout) return;
 
     const size_t want = AUDIO_FRAMES_PER_BUF * 2;   // int16 values per buffer
+    bool any_queued = false;
 
     for (int i = 0; i < AUDIO_BUFFERS; i++) {
         if (g_wave_inuse[i]) {
             if (g_wavehdr[i].dwFlags & WHDR_DONE) g_wave_inuse[i] = false;
-            else continue;
+            else { any_queued = true; continue; }
         }
 
-        // Fill a whole buffer's worth every time.  Submitting short buffers
-        // makes waveOut restart its timing on each one, which is audible as
-        // stutter; a steady buffer length keeps the device clock even.
+        // Only ever submit a whole buffer.  The N64 AI hands over audio in
+        // bursts, so short buffers are normal, not a sign of trouble; padding a
+        // part-full buffer out with a held sample stretches real audio and is
+        // heard as a warble.  Whatever is left over stays in the ring and is
+        // topped up by the next burst, which is what smooths the bursts out.
         size_t got;
         EnterCriticalSection(&g_audio_cs);
         got = g_ring_count < want ? g_ring_count : want;
-        if (got) {
+        if (got == want) {
             size_t p = g_ring_tail;
             for (size_t k = 0; k < got; k++) {
                 g_wavebuf[i][k] = g_ring[p];
@@ -351,21 +354,13 @@ static void AudioPump() {
         LeaveCriticalSection(&g_audio_cs);
 
         if (got < want) {
-            // Starved.  Hold the last sample rather than jumping to zero: a
-            // step to silence in the middle of a note is the click people hear
-            // as "broken audio", whereas a held sample just holds the note.
-            if (got) {
-                const int16_t last_l = g_wavebuf[i][(got - 2) * 2 + 0];
-                const int16_t last_r = g_wavebuf[i][(got - 2) * 2 + 1];
-                for (size_t k = got; k < want; k += 2) {
-                    g_wavebuf[i][k + 0] = last_l;
-                    g_wavebuf[i][k + 1] = last_r;
-                }
-                got = want;
-            } else {
+            // Not a real underrun unless there is also nothing queued with the
+            // device: a short ring between AI bursts is normal, and the queued
+            // buffers are what the user is actually hearing.
+            if (!any_queued) {
                 g_underruns++;
-                break;      // nothing at all to play; leave the rest idle
             }
+            break;      // wait for the ring to fill; never inject a short buffer
         }
 
         g_wavehdr[i].dwBufferLength = (DWORD)(want * sizeof(int16_t));
