@@ -2,7 +2,12 @@
 # Nintendall - the Win32 GUI application (the one executable users run)
 # =============================================================================
 
-add_executable(nintendall WIN32 main.cpp)
+add_executable(nintendall WIN32
+    main.cpp
+    input_config.cpp
+    input_dialog.cpp
+    controller_layouts.cpp
+)
 
 target_link_libraries(nintendall PRIVATE
     emu_framework

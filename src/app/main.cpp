@@ -39,6 +39,8 @@
 #include "save_state.h"
 #include "core_registry.h"
 #include "zip.h"
+#include "input_config.h"
+#include "input_dialog.h"
 
 // =============================================================================
 // Menu / command ids
@@ -57,6 +59,8 @@
 #define IDM_STATE_LOAD_SLOT    1220   // + slot (1..9)
 
 #define IDM_HELP_ABOUT         1301
+
+#define IDM_EMU_CONTROLS       1104
 
 #define IDM_ACCEL_LOAD         2001
 #define IDM_ACCEL_SAVE         2002
@@ -119,6 +123,10 @@ static int                      g_frame_h = 0;
 static char                     g_video_log_path[MAX_PATH] = "";
 static int                      g_logged_w = 0;
 static int                      g_logged_h = 0;
+
+// True once a saved mapping has been read, so defaults are only applied for
+// consoles the user has not configured yet.
+static bool                     g_input_loaded = false;
 
 // Offscreen back buffer: the frame is composed into a memory DC and then
 // blitted to the window in one operation, which removes tearing/flicker.
@@ -216,31 +224,18 @@ static void AudioCallback(void* userdata, const int16_t* samples, int count) {
     LeaveCriticalSection(&g_audio_cs);
 }
 
-static int KeyDown(int vk) {
-    return (GetAsyncKeyState(vk) & 0x8000) ? 1 : 0;
-}
-
 static int InputStateCallback(void* userdata, unsigned port, unsigned device,
                               unsigned index, unsigned id) {
     (void)userdata; (void)index;
-    if (port != 0) return 0;
     if (device != EMU_DEVICE_JOYPAD && device != EMU_DEVICE_NONE) return 0;
 
-    switch (id) {
-        case EMU_ID_UP:     return KeyDown(VK_UP);
-        case EMU_ID_DOWN:   return KeyDown(VK_DOWN);
-        case EMU_ID_LEFT:   return KeyDown(VK_LEFT);
-        case EMU_ID_RIGHT:  return KeyDown(VK_RIGHT);
-        case EMU_ID_A:      return KeyDown('X');
-        case EMU_ID_B:      return KeyDown('Z');
-        case EMU_ID_X:      return KeyDown('S');
-        case EMU_ID_Y:      return KeyDown('A');
-        case EMU_ID_L:      return KeyDown('Q');
-        case EMU_ID_R:      return KeyDown('W');
-        case EMU_ID_START:  return KeyDown(VK_RETURN);
-        case EMU_ID_SELECT: return KeyDown(VK_RSHIFT) || KeyDown(VK_SHIFT);
-        default:            return 0;
+    // Player 1 answers to the configured mapping; the NES light gun is driven by
+    // the mouse rather than a button.
+    if (id == EMU_ID_POINTER_PRESSED) {
+        return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) ? 1 : 0;
     }
+    if (port > INPUT_MAX_PORTS - 1) return 0;
+    return InputSystem::get().is_pressed(port, (EmuInputId)id);
 }
 
 // =============================================================================
@@ -340,6 +335,9 @@ static DWORD WINAPI EmuThreadProc(LPVOID param) {
     while (!g_quit) {
         EmuCoreHandle core = nullptr;
         const EmuCoreModule* mod = nullptr;
+
+        // Sample the pads once per frame, before the core asks about buttons.
+        InputSystem::get().poll();
 
         EnterCriticalSection(&g_core_cs);
         core = g_core;
@@ -508,6 +506,12 @@ static void LoadRom(const char* path) {
 
     UnloadCurrentRom();
 
+    // Each console has its own pad, so start from its defaults unless the user
+    // already has a saved mapping.
+    if (!g_input_loaded)
+        InputSystem::get().apply_all_defaults(console);
+    InputSystem::get().set_active_console(console);
+
     strncpy(g_rom_base, rom_base, sizeof(g_rom_base) - 1);
     g_rom_base[sizeof(g_rom_base) - 1] = 0;
     strncpy(g_rom_path, path, sizeof(g_rom_path) - 1);
@@ -663,6 +667,8 @@ static HMENU BuildMenu() {
     AppendMenuW(emu, MF_STRING, IDM_EMU_PAUSE, L"&Pause\tSpace");
     AppendMenuW(emu, MF_STRING, IDM_EMU_RESET, L"&Reset\tF2");
     AppendMenuW(emu, MF_STRING, IDM_EMU_POWER_CYCLE, L"&Power Cycle");
+    AppendMenuW(emu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(emu, MF_STRING, IDM_EMU_CONTROLS, L"&Configure Controls...");
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)emu, L"&Emulation");
 
     HMENU states = CreatePopupMenu();
@@ -857,6 +863,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 LeaveCriticalSection(&g_core_cs);
                 return 0;
             }
+            if (id == IDM_EMU_CONTROLS) {
+                if (ShowInputDialog(hwnd, g_console)) {
+                    char path[MAX_PATH];
+                    _snprintf(path, sizeof(path) - 1, "%s\\input.cfg", g_save_dir);
+                    InputSystem::get().save(path);
+                    SetStatus(L"Controls saved");
+                }
+                return 0;
+            }
             if (id == IDM_EMU_POWER_CYCLE) {
                 EnterCriticalSection(&g_core_cs);
                 if (g_core && g_module && g_module->power_cycle) g_module->power_cycle(g_core);
@@ -1014,6 +1029,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, PWSTR cmdLine, int sho
                   "%s\\video-modes.log", g_save_dir);
         g_video_log_path[sizeof(g_video_log_path) - 1] = 0;
         if (slash) *slash = '\\';
+    }
+
+    // Controller mapping.  Load the saved table when there is one; otherwise
+    // fall back to sensible defaults for whatever console is loaded later.
+    {
+        char input_cfg[MAX_PATH];
+        _snprintf(input_cfg, sizeof(input_cfg) - 1, "%s\\input.cfg", g_save_dir);
+        input_cfg[sizeof(input_cfg) - 1] = 0;
+        g_input_loaded = InputSystem::get().load(input_cfg);
     }
 
     InitializeCriticalSection(&g_video_cs);
