@@ -6,11 +6,12 @@
 # shim/.
 #
 # Build notes
-#   - mupen64plus-core is built with the *interpreter* (no dynarec, no nasm)
-#     to keep the first working build simple.  Re-add -DDYNAREC + the
-#     asm_defines/nasm steps later for speed.
+#   - mupen64plus-core is built WITH the x86-64 dynarec (see "x86-64 dynarec"
+#     below).  Without it the R4300 runs through the C interpreter, which is
+#     several times slower and makes most games unplayable.
 #   - angrylion (software RDP) runs single-threaded (parallel = false) so no
-#     pthread dependency is required.
+#     pthread dependency is required.  It renders at native N64 resolution
+#     (max 768x640) and the frontend scales up, so the pixel count stays low.
 #   - The SDL subset (sdl_shim.c) and the headless frontend stubs
 #     (upstream_stubs.c) are compiled straight into m64p_core.
 # =============================================================================
@@ -190,6 +191,75 @@ target_include_directories(m64p_core PUBLIC
 )
 target_compile_definitions(m64p_core PRIVATE -DM64P_PARALLEL -DWIN32)
 set_target_properties(m64p_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# -----------------------------------------------------------------------------
+# x86-64 dynarec
+#
+# Without this the R4300 CPU runs through the C interpreter (cached_interp.c),
+# which is several times slower than a JIT and is the main reason N64 games
+# stutter.  Upstream calls this DYNAREC = x86_64; NEW_DYNAREC is ARM-only and
+# does not apply here.
+#
+# Two prerequisites:
+#   * gen_asm_defines produces asm_defines_nasm.h.  Upstream scrapes those
+#     offsets out of a compiled object with awk; gen_asm_defines.c derives
+#     them directly with offsetof(), so no awk is needed.
+#   * nasm assembles dyna_start.asm, the entry stub generated code runs from.
+#     It #includes the header produced above.
+# -----------------------------------------------------------------------------
+find_program(NASM_EXE nasm)
+if(NOT NASM_EXE)
+    find_program(NASM_EXE nasm
+        PATHS "C:/Program Files/NASM" "C:/mingw64/bin" "C:/msys64/mingw64/bin"
+        NO_DEFAULT_PATH)
+endif()
+
+if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64"
+   AND NASM_EXE)
+
+    set(ASM_DEFINES_HDR "${CMAKE_CURRENT_BINARY_DIR}/asm_defines_nasm.h")
+    set(DYNA_START_OBJ "${CMAKE_CURRENT_BINARY_DIR}/dyna_start_x86_64.o")
+
+    add_executable(gen_asm_defines_build "${CMAKE_CURRENT_SOURCE_DIR}/gen_asm_defines.c")
+    target_include_directories(gen_asm_defines_build PRIVATE "${M64P_SRC}")
+    set_target_properties(gen_asm_defines_build PROPERTIES OUTPUT_NAME gen_asm_defines)
+
+    add_custom_command(
+        OUTPUT "${ASM_DEFINES_HDR}"
+        COMMAND gen_asm_defines_build "${ASM_DEFINES_HDR}"
+        DEPENDS gen_asm_defines_build
+        COMMENT "Generating asm_defines_nasm.h for the x86-64 dynarec"
+        VERBATIM)
+
+    add_custom_command(
+        OUTPUT "${DYNA_START_OBJ}"
+        COMMAND "${NASM_EXE}" -f win64
+                -I "${CMAKE_CURRENT_BINARY_DIR}/"
+                -I "${M64P_SRC}/device/r4300/x86_64/"
+                "${M64P_SRC}/device/r4300/x86_64/dyna_start.asm"
+                -o "${DYNA_START_OBJ}"
+        DEPENDS "${ASM_DEFINES_HDR}"
+                "${M64P_SRC}/device/r4300/x86_64/dyna_start.asm"
+        COMMENT "Assembling dyna_start.asm with nasm"
+        VERBATIM)
+
+    target_sources(m64p_core PRIVATE
+        "${M64P_SRC}/device/r4300/recomp.c"
+        "${M64P_SRC}/device/r4300/x86_64/assemble.c"
+        "${M64P_SRC}/device/r4300/x86_64/dynarec.c"
+        "${M64P_SRC}/device/r4300/x86_64/regcache.c"
+        "${DYNA_START_OBJ}")
+    target_include_directories(m64p_core PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}"
+        "${M64P_SRC}/device/r4300/x86_64")
+    target_compile_definitions(m64p_core PRIVATE -DDYNAREC)
+    message(STATUS "N64: x86-64 dynarec enabled (nasm: ${NASM_EXE})")
+else()
+    message(WARNING
+        "N64: x86-64 dynarec DISABLED - nasm was not found or this is not "
+        "x86-64. The R4300 will use the C interpreter, which is several times "
+        "slower and causes stutter. Install NASM and reconfigure.")
+endif()
 
 # -----------------------------------------------------------------------------
 # Nintendall adapter (n64_core)
