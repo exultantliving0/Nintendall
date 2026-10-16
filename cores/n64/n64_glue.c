@@ -65,14 +65,16 @@
 #include "screen.h"
 #include "parallel_al.h"
 
-/* angrylion references parallel_* even when running single-threaded
- * (config.parallel gates the calls at runtime, but the symbols are still
- * referenced).  Since we do not compile parallel_al.cpp, provide no-op stubs
- * here.  They are never actually invoked with parallel = false. */
+/* Angrylion calls the parallel_* entry points unconditionally; config.parallel
+ * decides at runtime whether the work is actually split.  With
+ * N64_PARALLEL_VIDEO the real thread pool (parallel_al.cpp) is linked in.
+ * Without it, no-op stubs satisfy the linker and every call runs inline. */
+#ifndef N64_PARALLEL_VIDEO
 void parallel_alinit(uint32_t num) { (void)num; }
 void parallel_run(void task(uint32_t)) { if (task) task(0); }
 uint32_t parallel_num_workers(void) { return 1; }
 void parallel_close(void) {}
+#endif
 
 /* RSP entry layer (mupen64plus-rsp-cxd4 LLE interpreter - see n64_rsp.c) */
 void n64_rsp_init(RSP_INFO* info);
@@ -954,8 +956,27 @@ int n64_glue_startup(const char* data_path)
     s_vi_config.vi.interp = VI_INTERP_LINEAR;
     s_vi_config.vi.widescreen = false;
     s_vi_config.vi.hide_overscan = false;
+
+#ifdef N64_PARALLEL_VIDEO
+    /* The software rasteriser is the expensive half of a frame, and angrylion
+     * splits it across cores.  Leave one core for the emulation thread so audio
+     * and input keep their deadlines. */
+    {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        unsigned workers = si.dwNumberOfProcessors;
+        if (workers > 1) {
+            s_vi_config.parallel  = true;
+            s_vi_config.num_workers = workers - 1;
+        } else {
+            s_vi_config.parallel  = false;
+            s_vi_config.num_workers = 1;
+        }
+    }
+#else
     s_vi_config.parallel = false;   /* single-threaded rasteriser */
     s_vi_config.num_workers = 1;
+#endif
 
     /* SpeedLimiter must be off: the frontend paces the emulation from its own
      * thread, and the core blocks in gfx.updateScreen() every frame. */

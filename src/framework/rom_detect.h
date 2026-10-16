@@ -54,6 +54,10 @@ const char* emu_console_folder_name(EmuConsoleType console);
 // Returns 0.0 when the framebuffer's own ratio should be used instead.
 double emu_console_display_aspect(EmuConsoleType console);
 
+// First visible row of the picture inside a framebuffer that carries blanking
+// rows. Needed because the N64's active area is not vertically centred.
+int emu_console_active_top(EmuConsoleType console, int buffer_h, int picture_h);
+
 // NES: iNES, NES 2.0, UNIF headers
 int emu_detect_nes(const uint8_t* data, size_t size, EmuDetectResult* result);
 

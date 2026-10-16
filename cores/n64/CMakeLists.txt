@@ -28,12 +28,31 @@ set(SHIM      "${CMAKE_CURRENT_SOURCE_DIR}/shim")
 # -----------------------------------------------------------------------------
 # angrylion (software RDP)
 # -----------------------------------------------------------------------------
+option(N64_PARALLEL_VIDEO
+       "Rasterise N64 frames on multiple threads (angrylion software RDP)" ON)
+
 add_library(angrylion STATIC
     "${ANG}/n64video.c"
 )
 target_include_directories(angrylion PUBLIC "${ANG}")
 set_target_properties(angrylion PROPERTIES POSITION_INDEPENDENT_CODE ON
     C_STANDARD 99 C_STANDARD_REQUIRED ON)
+
+# Angrylion is a software rasteriser: it is the expensive half of an N64 frame.
+# parallel_al.cpp is its thread pool and splits each frame across cores, which
+# is what makes the picture smooth on a multi-core machine.  It is C++ (std::thread,
+# which MinGW satisfies with winpthreads and links statically), so the target has
+# to be allowed C++17 as well.
+if(N64_PARALLEL_VIDEO)
+    target_sources(angrylion PRIVATE "${ANG}/parallel_al.cpp")
+    set_target_properties(angrylion PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+    target_compile_definitions(angrylion PUBLIC N64_PARALLEL_VIDEO)
+    find_package(Threads REQUIRED)
+    target_link_libraries(angrylion PUBLIC Threads::Threads)
+    message(STATUS "N64: multi-threaded angrylion rasteriser enabled")
+else()
+    message(STATUS "N64: angrylion rasteriser is single-threaded")
+endif()
 
 # -----------------------------------------------------------------------------
 # mupen64plus-rsp-cxd4 (LLE RSP interpreter)

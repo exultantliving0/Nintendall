@@ -114,6 +114,12 @@ static std::vector<uint32_t>    g_frame;
 static int                      g_frame_w = 0;
 static int                      g_frame_h = 0;
 
+// Video-mode diagnostic: records each distinct framebuffer size so the real
+// output of a core can be inspected from a log rather than guessed at.
+static char                     g_video_log_path[MAX_PATH] = "";
+static int                      g_logged_w = 0;
+static int                      g_logged_h = 0;
+
 // Offscreen back buffer: the frame is composed into a memory DC and then
 // blitted to the window in one operation, which removes tearing/flicker.
 static HDC                      g_back_dc = nullptr;
@@ -167,6 +173,20 @@ static void VideoCallback(void* userdata, const uint32_t* pixels,
         memcpy(g_frame.data() + (size_t)y * width,
                src + (size_t)y * src_pitch,
                (size_t)width * 4);
+    }
+
+    // One line per distinct framebuffer size, so the video mode a core is
+    // actually producing can be inspected without a debugger.
+    if (width != g_logged_w || height != g_logged_h) {
+        g_logged_w = width;
+        g_logged_h = height;
+        char line[256];
+        _snprintf(line, sizeof(line) - 1,
+                  "console=%d framebuffer=%dx%d ratio=%.4f\r\n",
+                  (int)g_console, width, height, (double)width / (double)height);
+        line[sizeof(line) - 1] = 0;
+        FILE* f = fopen(g_video_log_path, "ab");
+        if (f) { fputs(line, f); fclose(f); }
     }
     LeaveCriticalSection(&g_video_cs);
 
@@ -903,16 +923,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 int sx = 0, sy = 0, sw = g_frame_w, sh = g_frame_h;
                 const double buf_ratio = (double)sw / (double)sh;
                 if (buf_ratio < want) {
-                    // Buffer is too tall: keep the middle of the picture.
+                    // Taller than the picture should look: the buffer carries
+                    // blanking rows.  Crop them away, vertically only, from the
+                    // offset the console's VI actually puts the picture at.
+                    // Nothing is known about horizontal blanking, so the other
+                    // axis is never trimmed - cutting it eats real picture.
                     sh = (int)((double)sw / want + 0.5);
                     if (sh > g_frame_h) sh = g_frame_h;
-                    sy = (g_frame_h - sh) / 2;
-                } else if (buf_ratio > want) {
-                    // Buffer is too wide: keep the middle horizontally.
-                    sw = (int)((double)sh * want + 0.5);
-                    if (sw > g_frame_w) sw = g_frame_w;
-                    sx = (g_frame_w - sw) / 2;
+                    sy = emu_console_active_top(g_console, g_frame_h, sh);
                 }
+                // Wider than the target ratio needs no crop: the whole buffer is
+                // scaled into a box of the target shape.  This is the normal case
+                // for the N64's 240p mode, which arrives as 640x240 (8:3) and is
+                // shown on a 4:3 screen.
 
                 // Fit the cropped picture into the window at the target ratio.
                 int dw = cw;
@@ -982,6 +1005,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, PWSTR cmdLine, int sho
         g_save_dir[sizeof(g_save_dir) - 1] = 0;
     }
     emu_mkdir_p(g_save_dir);
+
+    // Video-mode log, next to the saves folder.
+    {
+        char* slash = strrchr(g_save_dir, '\\');
+        if (slash) *slash = 0;
+        _snprintf(g_video_log_path, sizeof(g_video_log_path) - 1,
+                  "%s\\video-modes.log", g_save_dir);
+        g_video_log_path[sizeof(g_video_log_path) - 1] = 0;
+        if (slash) *slash = '\\';
+    }
 
     InitializeCriticalSection(&g_video_cs);
     InitializeCriticalSection(&g_core_cs);

@@ -599,15 +599,36 @@ const char* emu_console_folder_name(EmuConsoleType console) {
 //
 // Returns width/height; 0 means "no opinion, use the framebuffer's own ratio".
 double emu_console_display_aspect(EmuConsoleType console) {
-    switch (console) {
-        case EMU_CONSOLE_NINTENDO_64:      return 4.0 / 3.0;
-        case EMU_CONSOLE_NES:              return 4.0 / 3.0;
-        case EMU_CONSOLE_SNES:             return 4.0 / 3.0;
-        case EMU_CONSOLE_NINTENDO_DS:      return 4.0 / 3.0;
-        case EMU_CONSOLE_GAMECUBE:         return 4.0 / 3.0;
-        case EMU_CONSOLE_GAMEBOY:          return 10.0 / 9.0;   // square pixels
-        case EMU_CONSOLE_GAMEBOY_COLOR:    return 10.0 / 9.0;
-        case EMU_CONSOLE_GAMEBOY_ADVANCE:  return 3.0 / 2.0;    // 240x160
-        default:                           return 0.0;
-    }
+    // Only the N64 overrides this, and only because its 240p mode arrives as
+    // 640x240 - an 8:3 picture that a 4:3 screen has to show stretched.
+    //
+    // Every other console deliberately returns 0.0, meaning "use the framebuffer's
+    // own ratio".  Those cores already emit the shape that should be displayed
+    // (NES 256x240, GB 160x144, GBA 240x160, and so on), and forcing a ratio on
+    // them distorts pictures that were previously correct.
+    if (console == EMU_CONSOLE_NINTENDO_64)
+        return 4.0 / 3.0;
+    return 0.0;
+}
+
+// Where the visible picture starts inside the framebuffer, when the buffer
+// carries blanking rows that have to be removed before scaling.
+//
+// The N64 is the only console here that does this: an NTSC VI buffer is 640
+// rows wide by 625 tall, and the 480 active lines are NOT centred - roughly
+// 45 blanking rows sit above the picture and 100 below.  Centring the crop
+// therefore eats into the top of the picture.  PAL buffers are taller still
+// and put the picture slightly lower again.
+int emu_console_active_top(EmuConsoleType console, int buffer_h, int picture_h) {
+    if (console != EMU_CONSOLE_NINTENDO_64) return (buffer_h - picture_h) / 2;
+
+    const int blank = buffer_h - picture_h;
+    if (blank <= 0) return 0;
+
+    // Scale the NTSC figure (45 of 145 blanking rows) to the buffer we were
+    // actually handed, which also lands sensibly on PAL.
+    int top = (blank * 45) / 145;
+    if (top < 0) top = 0;
+    if (top > blank) top = blank;
+    return top;
 }
