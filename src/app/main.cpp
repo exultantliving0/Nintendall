@@ -76,16 +76,28 @@
 
 #define AUDIO_SAMPLE_RATE   48000
 #define AUDIO_BUFFERS       8
-#define AUDIO_FRAMES_PER_BUF 1024        // stereo frames per WAVEHDR
+#define AUDIO_FRAMES_PER_BUF 512         // stereo frames per WAVEHDR (~10.7 ms)
+#define AUDIO_RING_FRAMES   (AUDIO_SAMPLE_RATE * 2)   // ~2 s of slack
+#define AUDIO_TARGET_FRAMES (AUDIO_SAMPLE_RATE / 4)   // aim to keep ~250 ms queued
 
 static HWAVEOUT  g_waveout = nullptr;
 static WAVEHDR   g_wavehdr[AUDIO_BUFFERS];
 static int16_t   g_wavebuf[AUDIO_BUFFERS][AUDIO_FRAMES_PER_BUF * 2];
 static bool      g_wave_inuse[AUDIO_BUFFERS];
 static CRITICAL_SECTION g_audio_cs;
-static std::vector<int16_t> g_audio_ring;
+
+// A plain ring with a head index.  This used to be a std::vector drained with
+// erase(begin, begin+n), which memmoved the whole remainder of the buffer every
+// single frame - up to 384 KB a frame, i.e. ~23 MB/s of pointless copying on
+// the emulation thread.  Advancing an index is O(1).
+static int16_t   g_ring[AUDIO_RING_FRAMES * 2];
+static size_t    g_ring_head = 0;    // next write
+static size_t    g_ring_tail = 0;    // next read
+static size_t    g_ring_count = 0;   // int16 values waiting
+
 static double                   g_spf = 0.0;   // smoothed stereo frames the core emits per emulated frame
 static long long                g_frame_audio = 0;  // stereo frames emitted so far this eumulated frame
+static int                      g_underruns = 0;   // times the ring ran dry
 
 // =============================================================================
 // Emulation state
@@ -198,6 +210,30 @@ static void VideoCallback(void* userdata, const uint32_t* pixels,
     }
     LeaveCriticalSection(&g_video_cs);
 
+    // One line per second of emulated time, recording how the audio ring is
+    // behaving.  Underruns - the ring running dry - are what "the audio is not
+    // working" looks like from the inside, and drift shows up as the level
+    // steadily walking up or down.
+    {
+        static int countdown = 0;
+        if (--countdown <= 0 && g_video_log_path[0]) {
+            countdown = 60;
+            size_t level;
+            EnterCriticalSection(&g_audio_cs);
+            level = g_ring_count / 2;
+            LeaveCriticalSection(&g_audio_cs);
+
+            char line[192];
+            _snprintf(line, sizeof(line) - 1,
+                      "audio level=%zu frames (%.0f ms) spf=%.1f underruns=%d\r\n",
+                      level, (double)level * 1000.0 / AUDIO_SAMPLE_RATE,
+                      g_spf, g_underruns);
+            line[sizeof(line) - 1] = 0;
+            FILE* f = fopen(g_video_log_path, "ab");
+            if (f) { fputs(line, f); fclose(f); }
+        }
+    }
+
     if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
@@ -212,15 +248,21 @@ static void AudioCallback(void* userdata, const int16_t* samples, int count) {
     // runs on the emulation thread, so no locking is needed.
     g_frame_audio += count;
 
+    // Cap the ring at ~2 s so a stalled device cannot grow without bound. When
+    // it is full, the oldest audio is dropped rather than the newest: keeping
+    // up with real time matters more than playing the backlog.
     EnterCriticalSection(&g_audio_cs);
-    // Cap the ring at ~2 seconds so a stalled device cannot grow without bound.
-    const size_t cap = (size_t)AUDIO_SAMPLE_RATE * 2 * 2;
-    if (g_audio_ring.size() < cap) {
-        size_t n = (size_t)count * 2;
-        size_t room = cap - g_audio_ring.size();
-        if (n > room) n = room;
-        g_audio_ring.insert(g_audio_ring.end(), samples, samples + n);
+    size_t n = (size_t)count * 2;                 // int16 values
+    if (g_ring_count + n > (size_t)AUDIO_RING_FRAMES * 2) {
+        size_t drop = g_ring_count + n - (size_t)AUDIO_RING_FRAMES * 2;
+        g_ring_tail = (g_ring_tail + drop) % ((size_t)AUDIO_RING_FRAMES * 2);
+        g_ring_count -= drop;
     }
+    for (size_t i = 0; i < n; i++) {
+        g_ring[g_ring_head] = samples[i];
+        g_ring_head = (g_ring_head + 1) % ((size_t)AUDIO_RING_FRAMES * 2);
+    }
+    g_ring_count += n;
     LeaveCriticalSection(&g_audio_cs);
 }
 
@@ -291,23 +333,42 @@ static void AudioPump() {
             else continue;
         }
 
-        size_t got = 0;
+        // Fill a whole buffer's worth every time.  Submitting short buffers
+        // makes waveOut restart its timing on each one, which is audible as
+        // stutter; a steady buffer length keeps the device clock even.
+        size_t got;
         EnterCriticalSection(&g_audio_cs);
-        size_t have = g_audio_ring.size();
-        got = have < want ? have : want;
+        got = g_ring_count < want ? g_ring_count : want;
         if (got) {
-            memcpy(g_wavebuf[i], g_audio_ring.data(), got * sizeof(int16_t));
-            g_audio_ring.erase(g_audio_ring.begin(), g_audio_ring.begin() + got);
+            size_t p = g_ring_tail;
+            for (size_t k = 0; k < got; k++) {
+                g_wavebuf[i][k] = g_ring[p];
+                if (++p == (size_t)AUDIO_RING_FRAMES * 2) p = 0;
+            }
+            g_ring_tail = p;
+            g_ring_count -= got;
         }
         LeaveCriticalSection(&g_audio_cs);
 
-        // Nothing buffered: leave the remaining buffers free rather than
-        // padding with silence (padding is what causes the clicks).
-        if (got == 0) break;
+        if (got < want) {
+            // Starved.  Hold the last sample rather than jumping to zero: a
+            // step to silence in the middle of a note is the click people hear
+            // as "broken audio", whereas a held sample just holds the note.
+            if (got) {
+                const int16_t last_l = g_wavebuf[i][(got - 2) * 2 + 0];
+                const int16_t last_r = g_wavebuf[i][(got - 2) * 2 + 1];
+                for (size_t k = got; k < want; k += 2) {
+                    g_wavebuf[i][k + 0] = last_l;
+                    g_wavebuf[i][k + 1] = last_r;
+                }
+                got = want;
+            } else {
+                g_underruns++;
+                break;      // nothing at all to play; leave the rest idle
+            }
+        }
 
-        // Submit exactly what we have (a short buffer is fine; dwBufferLength
-        // bounds playback), so the stream never contains injected silence.
-        g_wavehdr[i].dwBufferLength = (DWORD)(got * sizeof(int16_t));
+        g_wavehdr[i].dwBufferLength = (DWORD)(want * sizeof(int16_t));
         g_wavehdr[i].dwFlags &= ~WHDR_DONE;
         if (waveOutWrite(g_waveout, &g_wavehdr[i], sizeof(WAVEHDR)) == MMSYSERR_NOERROR)
             g_wave_inuse[i] = true;
@@ -392,17 +453,28 @@ static DWORD WINAPI EmuThreadProc(LPVOID param) {
                     // ease off slightly so it cannot grow into the 2 s drop cap.
                     size_t level;
                     EnterCriticalSection(&g_audio_cs);
-                    level = g_audio_ring.size();
+                    level = g_ring_count / 2;   // stereo frames waiting
                     LeaveCriticalSection(&g_audio_cs);
-                    if (level > (size_t)AUDIO_FRAMES_PER_BUF * 2 * 4)
+                    if (level > (size_t)AUDIO_TARGET_FRAMES * 2)
                         frame_seconds *= 1.05;
                 }
 
                 next.QuadPart += (LONGLONG)(frame_seconds * (double)freq.QuadPart);
                 QueryPerformanceCounter(&now);
                 if (next.QuadPart > now.QuadPart) {
-                    LONGLONG delta_us = (next.QuadPart - now.QuadPart) * 1000000 / freq.QuadPart;
-                    if (delta_us > 0) Sleep((DWORD)(delta_us / 1000));
+                    LONGLONG delta_ticks = next.QuadPart - now.QuadPart;
+                    double delta_us = (double)delta_ticks * 1000000.0 / (double)freq.QuadPart;
+                    // Sleep for all but the last millisecond, then spin.  Sleep
+                    // is only accurate to about a millisecond even with
+                    // timeBeginPeriod(1), and at 60 Hz a whole millisecond of
+                    // error every frame is enough to starve the audio ring.
+                    if (delta_us > 1500.0) {
+                        Sleep((DWORD)((delta_us - 1000.0) / 1000.0));
+                        QueryPerformanceCounter(&now);
+                    }
+                    while (next.QuadPart > now.QuadPart) {
+                        QueryPerformanceCounter(&now);
+                    }
                 } else {
                     next = now;   // fell behind; catch up immediately
                 }
@@ -446,7 +518,7 @@ static void UnloadCurrentRom() {
     LeaveCriticalSection(&g_core_cs);
 
     EnterCriticalSection(&g_audio_cs);
-    g_audio_ring.clear();
+    g_ring_head = g_ring_tail = g_ring_count = 0;
     LeaveCriticalSection(&g_audio_cs);
 
     // Forget the previous core's measured audio rate; the next core re-measures.

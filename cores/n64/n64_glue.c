@@ -167,6 +167,10 @@ static int16_t s_dst[N64_AUDIO_OUT_FRAMES * 2];
 
 static unsigned s_ai_clock = 48681812u;  /* NTSC */
 static double   s_ai_rate  = 44100.0;
+
+/* Smoothed drift correction applied to the resampling ratio, kept near 1.0.
+ * See audio_convert_and_queue(). */
+static double   s_rate_adj  = 1.0;
 static double   s_phase;
 static int16_t  s_prev_l;
 static int16_t  s_prev_r;
@@ -396,6 +400,7 @@ static void audio_ring_reset(void)
     s_phase = 0.0;
     s_prev_l = 0;
     s_prev_r = 0;
+    s_rate_adj = 1.0;    /* start unbiased after a reset or ROM change */
 }
 
 /* Resample `frames` native frames (already in s_src) to 48 kHz and queue them.
@@ -406,9 +411,45 @@ static void audio_convert_and_queue(unsigned frames)
     unsigned produced = 0;
     double frac = s_phase;
     int16_t pl = s_prev_l, pr = s_prev_r;
-    double step = s_ai_rate / (double)N64_AUDIO_RATE;
+    double step;
     const int16_t* in = s_src;
 
+    /* Drift correction.
+     *
+     * The AI's sample rate comes straight out of the emulated registers, and
+     * the N64's audio and video clocks are not an exact multiple of 48 kHz.
+     * Resampling with a fixed ratio therefore loses or gains a few samples a
+     * second, and the ring slowly drifts: run long enough and it either fills
+     * and starts dropping the oldest audio (pitch jumps) or empties and leaves
+     * gaps.  Nudging the ratio by a fraction of a percent towards the middle of
+     * the ring keeps it steady without being audible.
+     */
+    {
+        unsigned count;
+        const unsigned target = N64_AUDIO_RING_FRAMES / 4u;   /* ~340 ms */
+        double want = 1.0;
+
+        EnterCriticalSection(&s_lock);
+        count = s_ring_count;
+        LeaveCriticalSection(&s_lock);
+
+        /* A larger step emits fewer output frames per input frame, so the ring
+         * fills; a smaller one drains it.  A ring that is too full therefore
+         * wants a smaller step and a ring that is too empty wants a larger one.
+         */
+        if      (count > target * 2u)   want = 0.9960;
+        else if (count > target)        want = 0.9985;
+        else if (count < target / 2u)   want = 1.0040;
+        else if (count < target)        want = 1.0015;
+
+        /* Ease towards the target rather than stepping, so the correction is
+         * not itself audible as a pitch wobble. */
+        s_rate_adj += (want - s_rate_adj) * 0.05;
+        if (s_rate_adj < 0.99)  s_rate_adj = 0.99;
+        if (s_rate_adj > 1.01)  s_rate_adj = 1.01;
+    }
+
+    step = (s_ai_rate / (double)N64_AUDIO_RATE) * s_rate_adj;
     if (step <= 0.0)
         step = 1.0;
 
