@@ -76,9 +76,17 @@
 
 #define AUDIO_SAMPLE_RATE   48000
 #define AUDIO_BUFFERS       8
-#define AUDIO_FRAMES_PER_BUF 512         // stereo frames per WAVEHDR (~10.7 ms)
+#define AUDIO_FRAMES_PER_BUF 256         // stereo frames per WAVEHDR (~5.3 ms)
 #define AUDIO_RING_FRAMES   (AUDIO_SAMPLE_RATE * 2)   // ~2 s of slack
 #define AUDIO_TARGET_FRAMES (AUDIO_SAMPLE_RATE / 4)   // aim to keep ~250 ms queued
+
+// Enough audio buffered before playback starts, and the level below which we
+// stop feeding the device so the cushion can rebuild.  Paced cores produce
+// roughly what the device consumes, so without a deliberate cushion the ring
+// sits near empty and playback stutters.  Measured on N64 the ring
+// oscillated between 0 and 530 frames - about 10 ms - without this.
+#define AUDIO_PRIME_FRAMES  (AUDIO_SAMPLE_RATE / 10)   // ~100 ms
+#define AUDIO_LOW_WATER     (AUDIO_SAMPLE_RATE / 20)   // ~50 ms
 
 static HWAVEOUT  g_waveout = nullptr;
 static WAVEHDR   g_wavehdr[AUDIO_BUFFERS];
@@ -98,6 +106,7 @@ static size_t    g_ring_count = 0;   // int16 values waiting
 static double                   g_spf = 0.0;   // smoothed stereo frames the core emits per emulated frame
 static long long                g_frame_audio = 0;  // stereo frames emitted so far this eumulated frame
 static int                      g_underruns = 0;   // times the ring ran dry
+static bool                     g_audio_primed = false;  // device has a cushion queued
 
 // =============================================================================
 // Emulation state
@@ -223,11 +232,18 @@ static void VideoCallback(void* userdata, const uint32_t* pixels,
             level = g_ring_count / 2;
             LeaveCriticalSection(&g_audio_cs);
 
-            char line[192];
+            char line[224];
+            static int prev_frames = 0;
+            int queued = 0;
+            for (int i = 0; i < AUDIO_BUFFERS; i++)
+                if (g_wave_inuse[i]) queued++;
+            int fps = (int)(g_frame_count - (long long)prev_frames);
+            prev_frames = (int)g_frame_count;
+
             _snprintf(line, sizeof(line) - 1,
-                      "audio level=%zu frames (%.0f ms) spf=%.1f underruns=%d\r\n",
+                      "audio level=%zu (%.0f ms) spf=%.1f underruns=%d fps=%d queued=%d primed=%d\r\n",
                       level, (double)level * 1000.0 / AUDIO_SAMPLE_RATE,
-                      g_spf, g_underruns);
+                      g_spf, g_underruns, fps, queued, g_audio_primed ? 1 : 0);
             line[sizeof(line) - 1] = 0;
             FILE* f = fopen(g_video_log_path, "ab");
             if (f) { fputs(line, f); fclose(f); }
@@ -328,21 +344,43 @@ static void AudioPump() {
     const size_t want = AUDIO_FRAMES_PER_BUF * 2;   // int16 values per buffer
     bool any_queued = false;
 
+    // Cushion management.
+    //
+    // The core produces roughly the same number of samples per frame as the
+    // device consumes, so the ring settles wherever it starts - measured at
+    // only 0..530 frames on N64, far too little to ride out anything.  So
+    // playback is held off until there is a real cushion buffered, and if the
+    // ring later falls below the low-water mark we stop feeding the device for
+    // a frame or two to let it rebuild.  The buffers already queued with the
+    // device cover that gap, so it is not audible.
+    {
+        size_t level;
+        EnterCriticalSection(&g_audio_cs);
+        level = g_ring_count / 2;
+        LeaveCriticalSection(&g_audio_cs);
+
+        if (!g_audio_primed) {
+            if (level < AUDIO_PRIME_FRAMES)
+                return;
+            g_audio_primed = true;
+        } else if (level < AUDIO_LOW_WATER) {
+            return;
+        }
+    }
+
     for (int i = 0; i < AUDIO_BUFFERS; i++) {
         if (g_wave_inuse[i]) {
             if (g_wavehdr[i].dwFlags & WHDR_DONE) g_wave_inuse[i] = false;
             else { any_queued = true; continue; }
         }
 
-        // Only ever submit a whole buffer.  The N64 AI hands over audio in
-        // bursts, so short buffers are normal, not a sign of trouble; padding a
-        // part-full buffer out with a held sample stretches real audio and is
-        // heard as a warble.  Whatever is left over stays in the ring and is
-        // topped up by the next burst, which is what smooths the bursts out.
+        // Never inject silence or a held sample into real audio: both are
+        // audible as a click or a warble.  Whatever the core actually produced
+        // is what gets played.
         size_t got;
         EnterCriticalSection(&g_audio_cs);
         got = g_ring_count < want ? g_ring_count : want;
-        if (got == want) {
+        if (got) {
             size_t p = g_ring_tail;
             for (size_t k = 0; k < got; k++) {
                 g_wavebuf[i][k] = g_ring[p];
@@ -353,20 +391,17 @@ static void AudioPump() {
         }
         LeaveCriticalSection(&g_audio_cs);
 
-        if (got < want) {
-            // Not a real underrun unless there is also nothing queued with the
-            // device: a short ring between AI bursts is normal, and the queued
-            // buffers are what the user is actually hearing.
-            if (!any_queued) {
-                g_underruns++;
-            }
-            break;      // wait for the ring to fill; never inject a short buffer
+        if (got == 0) {
+            if (!any_queued) g_underruns++;
+            break;      // nothing produced this frame; leave the rest idle
         }
 
-        g_wavehdr[i].dwBufferLength = (DWORD)(want * sizeof(int16_t));
+        g_wavehdr[i].dwBufferLength = (DWORD)(got * sizeof(int16_t));
         g_wavehdr[i].dwFlags &= ~WHDR_DONE;
-        if (waveOutWrite(g_waveout, &g_wavehdr[i], sizeof(WAVEHDR)) == MMSYSERR_NOERROR)
+        if (waveOutWrite(g_waveout, &g_wavehdr[i], sizeof(WAVEHDR)) == MMSYSERR_NOERROR) {
             g_wave_inuse[i] = true;
+            any_queued = true;
+        }
     }
 }
 
@@ -515,6 +550,8 @@ static void UnloadCurrentRom() {
     EnterCriticalSection(&g_audio_cs);
     g_ring_head = g_ring_tail = g_ring_count = 0;
     LeaveCriticalSection(&g_audio_cs);
+    // The next game has to fill a fresh cushion before it is heard.
+    g_audio_primed = false;
 
     // Forget the previous core's measured audio rate; the next core re-measures.
     g_spf = 0.0;

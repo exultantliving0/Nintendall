@@ -1045,15 +1045,29 @@ int n64_glue_startup(const char* data_path)
     migrate_legacy_saves();
 
     /* OnScreenDisplay defaults to on; without a window that only costs time
-     * (and the OSD module is not compiled in).  Also force the interpreter
-     * (the dynarec sources are not compiled in this build). */
+     * (and the OSD module is not compiled in).
+     *
+     * R4300Emulator is pinned to 1 (Cached Interpreter) on purpose.  Setting it
+     * to 2 selects the classic x86-64 dynarec, which does start - it prints
+     * "Starting R4300 emulator: Dynamic Recompiler" - but then dies with an
+     * access violation a couple of seconds into a game (Super Mario 64, for
+     * one).  Upstream dropped that dynarec long ago; the maintained JIT is the
+     * ARM-only new_dynarec.  Neither a bigger emulation-thread stack nor
+     * -fno-strict-aliasing changed the outcome, both were tried.
+     *
+     * The cached interpreter is roughly an order of magnitude slower than a
+     * working dynarec, so a real N64 speed-up means moving to a maintained
+     * core (mupen64plus-next and its ARITH/vector backends) rather than
+     * reviving this one.  Do not change this line to 2 without playing a game
+     * right through to check it survives.
+     */
     {
         m64p_handle core_config = NULL;
         if (ConfigOpenSection("Core", &core_config) == M64ERR_SUCCESS && core_config)
         {
             ConfigSetParameter(core_config, "OnScreenDisplay", M64TYPE_BOOL, &(int){0});
-            int interpreter = 1;   /* 1 = Cached Interpreter */
-            ConfigSetParameter(core_config, "R4300Emulator", M64TYPE_INT, &interpreter);
+            int emumode = 1;   /* 1 = Cached Interpreter; see the note above */
+            ConfigSetParameter(core_config, "R4300Emulator", M64TYPE_INT, &emumode);
         }
     }
 
@@ -1100,7 +1114,7 @@ int n64_glue_start(void)
     s_presented = 0;
     s_consumed = 0;
 
-    s_emu_thread = CreateThread(NULL, 0, emu_thread_proc, NULL, 0, NULL);
+    s_emu_thread = CreateThread(NULL, 8u * 1024u * 1024u, emu_thread_proc, NULL, 0, NULL);
     if (s_emu_thread == NULL) {
         glue_log(M64MSG_ERROR, "failed to create the emulation thread");
         return -1;
@@ -1133,6 +1147,53 @@ int n64_glue_frame(void)
         s_consumed++;
     }
     LeaveCriticalSection(&s_lock);
+
+    /* Hold the core to real time.
+     *
+     * n64_glue_frame() blocks until the core presents the next frame, so the
+     * frontend marks this core self-paced and skips its audio-clock pacing -
+     * adding that sleep on top of the blocking wait would double the frame
+     * period.  The upshot is that the core free-runs as fast as the host can
+     * emulate it, and the AI then produces samples faster than the 48 kHz
+     * device consumes them.  Measured on Super Mario 64 the surplus was about
+     * 1.5%, which slowly fills the frontend ring until it starts discarding
+     * audio: sound drifting out of step with picture over a couple of minutes.
+     *
+     * So the wait is done here instead, against the NTSC field rate. */
+    {
+        static LARGE_INTEGER s_next_vi = { 0 };
+        LARGE_INTEGER freq, now;
+
+        if (s_next_vi.QuadPart == 0) {
+            QueryPerformanceFrequency(&freq);
+            QueryPerformanceCounter(&now);
+            s_next_vi = now;
+        } else {
+            QueryPerformanceFrequency(&freq);
+            QueryPerformanceCounter(&now);
+
+            /* 1 / 60.0988 s, in performance-counter ticks. */
+            const LONGLONG period = (LONGLONG)((double)freq.QuadPart / 60.0988);
+
+            if (s_next_vi.QuadPart <= now.QuadPart) {
+                /* Fell behind (a stall, or the host is too slow).  Resume from
+                 * now rather than trying to make up every missed frame. */
+                s_next_vi = now;
+            }
+            s_next_vi.QuadPart += period;
+
+            while (now.QuadPart < s_next_vi.QuadPart) {
+                LONGLONG left_us = (s_next_vi.QuadPart - now.QuadPart) * 1000000 / freq.QuadPart;
+                /* Sleep is only good to about a millisecond even with
+                 * timeBeginPeriod(1); spin the last millisecond so the frame
+                 * period does not jitter by a whole millisecond every frame. */
+                if (left_us > 1500) {
+                    Sleep((DWORD)((left_us - 1000) / 1000));
+                }
+                QueryPerformanceCounter(&now);
+            }
+        }
+    }
 
     /* Audio is drained here and only here, so the callback always runs on the
      * frontend thread.  We drain the ring in N64_AUDIO_CHUNK-frame pieces.  If
