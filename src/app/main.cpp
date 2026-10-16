@@ -106,6 +106,12 @@ static size_t    g_ring_count = 0;   // int16 values waiting
 static double                   g_spf = 0.0;   // smoothed stereo frames the core emits per emulated frame
 static long long                g_frame_audio = 0;  // stereo frames emitted so far this eumulated frame
 static int                      g_underruns = 0;   // times the ring ran dry
+
+// Wall-clock cost of run_frame(), accumulated since the last audit and read by
+// tools\bench-cores.ps1.  Paired with the CPU the script samples externally,
+// this separates an emulator-bound core from a frontend-bound one.
+static double g_frame_wall_us = 0, g_frame_wall_max = 0;
+static long long g_frame_samples = 0;
 static bool                     g_audio_primed = false;  // device has a cushion queued
 
 // =============================================================================
@@ -241,9 +247,15 @@ static void VideoCallback(void* userdata, const uint32_t* pixels,
             prev_frames = (int)g_frame_count;
 
             _snprintf(line, sizeof(line) - 1,
-                      "audio level=%zu (%.0f ms) spf=%.1f underruns=%d fps=%d queued=%d primed=%d\r\n",
+                      "audio level=%zu (%.0f ms) spf=%.1f underruns=%d fps=%d queued=%d primed=%d"
+                      " | frame wall=%.2f ms wallmax=%.1f\r\n",
                       level, (double)level * 1000.0 / AUDIO_SAMPLE_RATE,
-                      g_spf, g_underruns, fps, queued, g_audio_primed ? 1 : 0);
+                      g_spf, g_underruns, fps, queued, g_audio_primed ? 1 : 0,
+                      g_frame_samples ? g_frame_wall_us / g_frame_samples / 1000.0 : 0.0,
+                      g_frame_wall_max / 1000.0);
+
+            g_frame_wall_us = g_frame_wall_max = 0;
+            g_frame_samples = 0;
             line[sizeof(line) - 1] = 0;
             FILE* f = fopen(g_video_log_path, "ab");
             if (f) { fputs(line, f); fclose(f); }
@@ -449,8 +461,26 @@ static DWORD WINAPI EmuThreadProc(LPVOID param) {
 
             EnterCriticalSection(&g_core_cs);
             if (g_core && g_module) {
+                /* Time run_frame(), so an emulator-bound core can be told from
+                 * a frontend-bound one.  Per-frame CPU is measured from outside
+                 * by tools\bench-cores.ps1, which reads the process counters
+                 * directly; doing it in here reported zero, and a number that is
+                 * always zero is worse than no number at all. */
+                LARGE_INTEGER w0, w1;
+
+                QueryPerformanceCounter(&w0);
+
                 mod->run_frame(core);
                 g_frame_count++;
+
+                QueryPerformanceCounter(&w1);
+
+                const double wall_us =
+                    (double)(w1.QuadPart - w0.QuadPart) * 1000000.0 / (double)freq.QuadPart;
+
+                g_frame_wall_us += wall_us;
+                if (wall_us > g_frame_wall_max) g_frame_wall_max = wall_us;
+                g_frame_samples++;
             }
             LeaveCriticalSection(&g_core_cs);
 

@@ -70,6 +70,11 @@ if(WIN32)
     if(MINGW)
         add_compile_options(-static-libgcc -static-libstdc++)
         add_link_options(-static)
+
+        # NOTE: -march=x86-64-v2 (SSE4.2/POPCNT) was measured across every core
+        # and made no difference - N64 moved 4.15 -> 4.36 cores busy, the rest
+        # within noise.  It would only add a minimum-CPU floor, so it is not set.
+        # Re-test with add_compile_options(-march=...) if the N64 core changes.
     endif()
 elseif(UNIX)
     list(APPEND PLATFORM_LIBS dl pthread m)
