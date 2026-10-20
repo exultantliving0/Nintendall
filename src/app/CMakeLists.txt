@@ -12,10 +12,12 @@ add_executable(nintendall WIN32
 target_link_libraries(nintendall PRIVATE
     emu_framework
     ${EMU_CORE_TARGETS}
+    SDL3::SDL3
+    ${PLATFORM_LIBS}
 )
 
 if(WIN32)
-    target_link_libraries(nintendall PRIVATE comdlg32 winmm user32 gdi32)
+    target_link_libraries(nintendall PRIVATE comdlg32 user32 gdi32)
 endif()
 
 if(MINGW)

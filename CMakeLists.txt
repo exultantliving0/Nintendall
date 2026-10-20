@@ -47,6 +47,16 @@ option(BUILD_3DS_CORE    "Build 3DS (Azahar) core"             OFF)
 option(BUILD_FRONTEND    "Build the Nintendall app"            ON)
 option(BUILD_SMOKE_TEST  "Build the headless core smoke test"  OFF)
 
+# SDL3 via FetchContent (zlib license, static linking OK)
+include(FetchContent)
+FetchContent_Declare(
+    SDL3
+    GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+    GIT_TAG release-3.2.4
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(SDL3)
+
 # =============================================================================
 # Platform settings
 # =============================================================================
