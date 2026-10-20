@@ -1,7 +1,7 @@
 ﻿// =============================================================================
 //  Nintendall - input: gamepad polling, the button-mapping store and turbo
 //  See input_config.h for the physical-input code scheme.
-//  Now uses SDL3 GameController API for unified cross-platform input.
+//  Now uses SDL3 GameController API + raw Joystick fallback for universal input.
 // =============================================================================
 
 #include "input_config.h"
@@ -10,6 +10,7 @@
 #include <string.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gamepad.h>
+#include <SDL3/SDL_joystick.h>
 
 // =============================================================================
 // PortMapping implementation
@@ -64,21 +65,20 @@ bool PortMapping::has_binding(EmuInputId id) const {
 }
 
 // =============================================================================
-// SDL3 GameController mapping
+// SDL3 GameController mapping (standard layout)
 // =============================================================================
 
-// Maps SDL GameController buttons to our EmuInputId
 static const struct { SDL_GamepadButton sdl; EmuInputId emu; const char* name; } sdl_button_map[] = {
-    { SDL_GAMEPAD_BUTTON_SOUTH, EMU_ID_A,          "A" },          // A / Cross
-    { SDL_GAMEPAD_BUTTON_EAST,  EMU_ID_B,          "B" },          // B / Circle
-    { SDL_GAMEPAD_BUTTON_WEST,  EMU_ID_Y,          "Y" },          // Y / Square
-    { SDL_GAMEPAD_BUTTON_NORTH, EMU_ID_X,          "X" },          // X / Triangle
-    { SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,  EMU_ID_L,  "LB" },       // LB / L1
-    { SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, EMU_ID_R,  "RB" },       // RB / R1
-    { SDL_GAMEPAD_BUTTON_BACK,  EMU_ID_SELECT,     "Select" },    // Back / Select / Share
-    { SDL_GAMEPAD_BUTTON_START, EMU_ID_START,      "Start" },     // Start / Options
-    { SDL_GAMEPAD_BUTTON_LEFT_STICK, EMU_ID_L3,    "L3" },        // L3
-    { SDL_GAMEPAD_BUTTON_RIGHT_STICK, EMU_ID_R3,   "R3" },        // R3
+    { SDL_GAMEPAD_BUTTON_SOUTH, EMU_ID_A,          "A" },
+    { SDL_GAMEPAD_BUTTON_EAST,  EMU_ID_B,          "B" },
+    { SDL_GAMEPAD_BUTTON_WEST,  EMU_ID_Y,          "Y" },
+    { SDL_GAMEPAD_BUTTON_NORTH, EMU_ID_X,          "X" },
+    { SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,  EMU_ID_L,  "LB" },
+    { SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, EMU_ID_R,  "RB" },
+    { SDL_GAMEPAD_BUTTON_BACK,  EMU_ID_SELECT,     "Select" },
+    { SDL_GAMEPAD_BUTTON_START, EMU_ID_START,      "Start" },
+    { SDL_GAMEPAD_BUTTON_LEFT_STICK, EMU_ID_L3,    "L3" },
+    { SDL_GAMEPAD_BUTTON_RIGHT_STICK, EMU_ID_R3,   "R3" },
     { SDL_GAMEPAD_BUTTON_DPAD_UP,    EMU_ID_UP,    "D-Up" },
     { SDL_GAMEPAD_BUTTON_DPAD_DOWN,  EMU_ID_DOWN,  "D-Down" },
     { SDL_GAMEPAD_BUTTON_DPAD_LEFT,  EMU_ID_LEFT,  "D-Left" },
@@ -99,13 +99,40 @@ static const int SDL_BUTTON_COUNT = sizeof(sdl_button_map) / sizeof(sdl_button_m
 static const int SDL_AXIS_COUNT = sizeof(sdl_axis_map) / sizeof(sdl_axis_map[0]);
 
 // =============================================================================
+// NSO (Nintendo Switch Online) controller mappings - placeholder until we get real GUIDs
+// =============================================================================
+
+static const char* nso_mappings[] = {
+    "050000007e0500000620000000000000,Nintendo Switch Online NES Controller,a:b0,b:b1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,back:b8,",
+    "050000007e0500000720000000000000,Nintendo Switch Online Famicom Controller,a:b0,b:b1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,back:b8,",
+    "050000007e0500000820000000000000,Nintendo Switch Online SNES Controller,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,back:b8,",
+    "050000007e0500000920000000000000,Nintendo Switch Online N64 Controller,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,guide:b8,",
+    "050000007e0500000a20000000000000,Nintendo Switch Online Genesis Controller,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,guide:b8,",
+};
+
+static void AddNSOMappings() {
+    for (int i = 0; i < (int)(sizeof(nso_mappings)/sizeof(nso_mappings[0])); i++) {
+        if (SDL_AddGamepadMapping(nso_mappings[i]) < 0) { /* ignore */ }
+    }
+}
+
+// =============================================================================
 // Internal state
 // =============================================================================
 
 static bool s_sdl_initialized = false;
+static bool s_sdl_initialized_once = false;
+
+// GameController devices (standard layout)
 static SDL_Gamepad* s_gamepads[INPUT_MAX_PORTS] = { nullptr };
 static int s_gamepad_instance_ids[INPUT_MAX_PORTS] = { -1, -1, -1, -1 };
-static bool s_sdl_initialized_once = false;
+
+// Raw Joystick devices (fallback for non-GameController devices)
+static SDL_Joystick* s_joysticks[INPUT_MAX_PORTS] = { nullptr };
+static int s_joystick_instance_ids[INPUT_MAX_PORTS] = { -1, -1, -1, -1 };
+static int s_joystick_num_buttons[INPUT_MAX_PORTS] = { 0 };
+static int s_joystick_num_axes[INPUT_MAX_PORTS] = { 0 };
+static int s_joystick_num_hats[INPUT_MAX_PORTS] = { 0 };
 
 static int s_pad_pressed[INPUT_MAX_PORTS] = { 0 };
 static int s_pad_prev[INPUT_MAX_PORTS] = { 0 };
@@ -114,38 +141,10 @@ static int s_pad_prev[INPUT_MAX_PORTS] = { 0 };
 // Helpers
 // =============================================================================
 
-// NSO (Nintendo Switch Online) controller mappings - not in SDL3's built-in DB yet
-// VID: 0x057e (Nintendo), PIDs: 0x2006/2007=NES, 0x2008=SNES, 0x2009=N64, 0x200a=Genesis
-static const char* nso_mappings[] = {
-    // NSO NES Controller (and Famicom) - D-pad, A, B, Start, Select
-    "050000007e0500000620000000000000,Nintendo Switch Online NES Controller,a:b0,b:b1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,back:b8,",
-    "050000007e0500000720000000000000,Nintendo Switch Online Famicom Controller,a:b0,b:b1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,back:b8,",
-    
-    // NSO SNES Controller - D-pad, A, B, X, Y, L, R, Start, Select
-    "050000007e0500000820000000000000,Nintendo Switch Online SNES Controller,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,back:b8,",
-    
-    // NSO N64 Controller - A, B, C-buttons (X,Y), L, R, Z (leftshoulder), Start, D-pad
-    // N64 uses: A=b0, B=b1, C-Up/C-Down/C-Left/C-Right mapped to right stick or dpad
-    "050000007e0500000920000000000000,Nintendo Switch Online N64 Controller,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,guide:b8,",
-    
-    // NSO Sega Genesis Controller - 6-button: A, B, C, X, Y, Z, Start, Mode
-    "050000007e0500000a20000000000000,Nintendo Switch Online Genesis Controller,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,guide:b8,",
-};
-
-// Add NSO controller mappings to SDL's gamepad database at runtime
-static void AddNSOMappings() {
-    for (int i = 0; i < (int)(sizeof(nso_mappings)/sizeof(nso_mappings[0])); i++) {
-        if (SDL_AddGamepadMapping(nso_mappings[i]) < 0) {
-            // Mapping might already exist or be invalid - ignore
-        }
-    }
-}
-
 static void EnsureSDL() {
     if (s_sdl_initialized_once) return;
     s_sdl_initialized_once = true;
-    if (SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC) < 0) {
-        // SDL initialization failed - continue without gamepad support
+    if (SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC | SDL_INIT_JOYSTICK) < 0) {
         return;
     }
     s_sdl_initialized = true;
@@ -159,22 +158,32 @@ static void UpdateGamepadList() {
     const SDL_JoystickID* joysticks = SDL_GetJoysticks(&count);
     if (!joysticks) return;
 
-    // Track which gamepads we've seen
-    bool seen[INPUT_MAX_PORTS] = { false };
+    bool seen_gp[INPUT_MAX_PORTS] = { false };
+    bool seen_joy[INPUT_MAX_PORTS] = { false };
 
     for (int i = 0; i < count && i < INPUT_MAX_PORTS; i++) {
         SDL_JoystickID instance_id = joysticks[i];
+
+        // DEBUG: Log ALL joysticks
+        SDL_Joystick* joy = SDL_OpenJoystick(instance_id);
+        if (joy) {
+            SDL_GUID guid = SDL_GetJoystickGUID(joy);
+            char guid_str[33];
+            SDL_GUIDToString(guid, guid_str, sizeof(guid_str));
+            const char* name = SDL_GetJoystickName(joy);
+            Uint16 vid = SDL_GetJoystickVendor(joy);
+            Uint16 pid = SDL_GetJoystickProduct(joy);
+            printf("[Input] Joystick: VID=%04x PID=%04x Name='%s' GUID=%s Gamepad=%d\n",
+                   vid, pid, name ? name : "unknown", guid_str, SDL_IsGamepad(instance_id));
+            SDL_CloseJoystick(joy);
+        }
+
         if (SDL_IsGamepad(instance_id)) {
-            // Find a free slot
+            // GameController path
             int slot = -1;
             for (int s = 0; s < INPUT_MAX_PORTS; s++) {
-                if (s_gamepad_instance_ids[s] == instance_id) {
-                    slot = s;
-                    break;
-                }
-                if (s_gamepad_instance_ids[s] == -1 && slot == -1) {
-                    slot = s;
-                }
+                if (s_gamepad_instance_ids[s] == instance_id) { slot = s; break; }
+                if (s_gamepad_instance_ids[s] == -1 && slot == -1) { slot = s; }
             }
             if (slot >= 0) {
                 if (s_gamepads[slot] && s_gamepad_instance_ids[slot] != instance_id) {
@@ -185,22 +194,55 @@ static void UpdateGamepadList() {
                     s_gamepads[slot] = SDL_OpenGamepad(instance_id);
                 }
                 s_gamepad_instance_ids[slot] = instance_id;
-                seen[slot] = true;
+                seen_gp[slot] = true;
+            }
+        } else {
+            // Raw Joystick fallback
+            int slot = -1;
+            for (int s = 0; s < INPUT_MAX_PORTS; s++) {
+                if (s_joystick_instance_ids[s] == instance_id) { slot = s; break; }
+                if (s_joystick_instance_ids[s] == -1 && slot == -1) { slot = s; }
+            }
+            if (slot >= 0) {
+                if (s_joysticks[slot] && s_joystick_instance_ids[slot] != instance_id) {
+                    SDL_CloseJoystick(s_joysticks[slot]);
+                    s_joysticks[slot] = nullptr;
+                }
+                if (!s_joysticks[slot]) {
+                    s_joysticks[slot] = SDL_OpenJoystick(instance_id);
+                    if (s_joysticks[slot]) {
+                        s_joystick_num_buttons[slot] = SDL_GetNumJoystickButtons(s_joysticks[slot]);
+                        s_joystick_num_axes[slot] = SDL_GetNumJoystickAxes(s_joysticks[slot]);
+                        s_joystick_num_hats[slot] = SDL_GetNumJoystickHats(s_joysticks[slot]);
+                        printf("[Input] Raw joystick opened: slot=%d buttons=%d axes=%d hats=%d\n",
+                               slot, s_joystick_num_buttons[slot], s_joystick_num_axes[slot], s_joystick_num_hats[slot]);
+                    }
+                }
+                s_joystick_instance_ids[slot] = instance_id;
+                seen_joy[slot] = true;
             }
         }
     }
 
-    // Close gamepads that are no longer connected
+    // Close disconnected
     for (int i = 0; i < INPUT_MAX_PORTS; i++) {
-        if (!seen[i] && s_gamepads[i]) {
+        if (!seen_gp[i] && s_gamepads[i]) {
             SDL_CloseGamepad(s_gamepads[i]);
             s_gamepads[i] = nullptr;
             s_gamepad_instance_ids[i] = -1;
         }
+        if (!seen_joy[i] && s_joysticks[i]) {
+            SDL_CloseJoystick(s_joysticks[i]);
+            s_joysticks[i] = nullptr;
+            s_joystick_instance_ids[i] = -1;
+            s_joystick_num_buttons[i] = 0;
+            s_joystick_num_axes[i] = 0;
+            s_joystick_num_hats[i] = 0;
+        }
     }
 }
 
-// Helper: get button name for display
+// Helper: button name for GameController
 static const char* sdl_button_name(int sdl_btn) {
     for (int i = 0; i < SDL_BUTTON_COUNT; i++) {
         if (sdl_button_map[i].sdl == sdl_btn) return sdl_button_map[i].name;
@@ -220,6 +262,11 @@ InputSystem::InputSystem() {
     for (int i = 0; i < INPUT_MAX_PORTS; i++) {
         s_gamepad_instance_ids[i] = -1;
         s_gamepads[i] = nullptr;
+        s_joystick_instance_ids[i] = -1;
+        s_joysticks[i] = nullptr;
+        s_joystick_num_buttons[i] = 0;
+        s_joystick_num_axes[i] = 0;
+        s_joystick_num_hats[i] = 0;
     }
 }
 
@@ -239,31 +286,64 @@ void InputSystem::poll() {
     memset(g_analog, 0, sizeof(g_analog));
 
     for (int port = 0; port < INPUT_MAX_PORTS; port++) {
+        // GameController path
         SDL_Gamepad* gp = s_gamepads[port];
-        if (!gp) continue;
+        if (gp) {
+            int bits = 0;
+            for (int i = 0; i < SDL_BUTTON_COUNT; i++) {
+                if (SDL_GetGamepadButton(gp, sdl_button_map[i].sdl)) {
+                    bits |= (1 << sdl_button_map[i].emu);
+                }
+            }
+            g_pad_pressed[port] = bits;
 
-        // Buttons
-        int bits = 0;
-        for (int i = 0; i < SDL_BUTTON_COUNT; i++) {
-            if (SDL_GetGamepadButton(gp, sdl_button_map[i].sdl)) {
-                bits |= (1 << sdl_button_map[i].emu);
+            for (int i = 0; i < SDL_AXIS_COUNT; i++) {
+                Sint16 val = SDL_GetGamepadAxis(gp, sdl_axis_map[i].sdl);
+                int16_t norm = (int16_t)(val * 128 / 32768);
+                const int deadzone = 32;
+                if (abs(norm) < deadzone) norm = 0;
+                this->g_analog[port][i] = (int8_t)norm;
             }
         }
-        g_pad_pressed[port] = bits;
 
-        // Analog axes
-        for (int i = 0; i < SDL_AXIS_COUNT; i++) {
-            Sint16 val = SDL_GetGamepadAxis(gp, sdl_axis_map[i].sdl);
-            // SDL axis is -32768..32767, normalize to -128..127
-            int16_t norm = (int16_t)(val * 128 / 32768);
-            // Apply deadzone (~25%)
-            const int deadzone = 32;
-            if (abs(norm) < deadzone) norm = 0;
-            this->g_analog[port][i] = (int8_t)norm;
+        // Raw Joystick path
+        SDL_Joystick* joy = s_joysticks[port];
+        if (joy) {
+            // Buttons
+            int nbtn = s_joystick_num_buttons[port];
+            for (int b = 0; b < nbtn && b < 32; b++) {
+                if (SDL_GetJoystickButton(joy, b)) {
+                    // Map raw button to a virtual EmuInputId starting at EMU_ID_JOYSTICK_UP (300)
+                    // We'll use EMU_ID_JOYSTICK_UP + b for raw buttons
+                    if (EMU_ID_JOYSTICK_UP + b < 332) { // safety
+                        g_pad_pressed[port] |= (1 << (EMU_ID_JOYSTICK_UP + b));
+                    }
+                }
+            }
+
+            // Axes
+            int naxis = s_joystick_num_axes[port];
+            for (int a = 0; a < naxis && a < 6; a++) {
+                Sint16 val = SDL_GetJoystickAxis(joy, a);
+                int16_t norm = (int16_t)(val * 128 / 32768);
+                const int deadzone = 32;
+                if (abs(norm) < deadzone) norm = 0;
+                // Store in g_analog starting at axis 6 (after standard 6 axes)
+                if (a < 6) this->g_analog[port][a] = (int8_t)norm; // overlap for now
+            }
+
+            // Hats (D-pad on many raw joysticks)
+            int nhats = s_joystick_num_hats[port];
+            for (int h = 0; h < nhats; h++) {
+                Uint8 hat = SDL_GetJoystickHat(joy, h);
+                if (hat & SDL_HAT_UP)    g_pad_pressed[port] |= (1 << (EMU_ID_JOYSTICK_UP + 32 + h*4 + 0));
+                if (hat & SDL_HAT_DOWN)  g_pad_pressed[port] |= (1 << (EMU_ID_JOYSTICK_UP + 32 + h*4 + 1));
+                if (hat & SDL_HAT_LEFT)  g_pad_pressed[port] |= (1 << (EMU_ID_JOYSTICK_UP + 32 + h*4 + 2));
+                if (hat & SDL_HAT_RIGHT) g_pad_pressed[port] |= (1 << (EMU_ID_JOYSTICK_UP + 32 + h*4 + 3));
+            }
         }
     }
 
-    // Handle capture mode for remapping dialog
     process_capture();
 }
 
@@ -278,6 +358,28 @@ int InputSystem::is_pressed(unsigned port, EmuInputId id) const {
     if (id >= EMU_ID_ANALOG_LEFT_X && id <= EMU_ID_TRIGGER_RIGHT) {
         int axis = id - EMU_ID_ANALOG_LEFT_X;
         if (axis >= 0 && axis < 6) return this->g_analog[port][axis] != 0 ? 1 : 0;
+    }
+
+    // Check raw joystick buttons/axes/hats
+    if (id >= EMU_ID_JOYSTICK_UP && id < EMU_ID_JOYSTICK_UP + 64) {
+        int raw_idx = id - EMU_ID_JOYSTICK_UP;
+        if (raw_idx < 32) {
+            // Buttons 0-31
+            SDL_Joystick* joy = s_joysticks[port];
+            if (joy && raw_idx < s_joystick_num_buttons[port]) {
+                return SDL_GetJoystickButton(joy, raw_idx) ? 1 : 0;
+            }
+        } else if (raw_idx < 64) {
+            // Hats 0-3 (4 directions each)
+            int hat_idx = (raw_idx - 32) / 4;
+            int dir = (raw_idx - 32) % 4;
+            SDL_Joystick* joy = s_joysticks[port];
+            if (joy && hat_idx < s_joystick_num_hats[port]) {
+                Uint8 hat = SDL_GetJoystickHat(joy, hat_idx);
+                Uint8 mask = (dir == 0) ? SDL_HAT_UP : (dir == 1) ? SDL_HAT_DOWN : (dir == 2) ? SDL_HAT_LEFT : SDL_HAT_RIGHT;
+                return (hat & mask) ? 1 : 0;
+            }
+        }
     }
 
     const PortMapping& m = g_map[port];
@@ -295,6 +397,25 @@ int InputSystem::is_pressed(unsigned port, EmuInputId id) const {
             if (p >= 0 && p < INPUT_MAX_PORTS && b >= 0 && b < 16) {
                 SDL_Gamepad* gp = s_gamepads[p];
                 if (gp && SDL_GetGamepadButton(gp, (SDL_GamepadButton)b)) return 1;
+            }
+            // Also support raw joystick codes (port*256 + 128 + button/hat)
+            if (b >= 128 && b < 192) {
+                int raw_b = b - 128;
+                SDL_Joystick* joy = s_joysticks[p];
+                if (joy && raw_b < s_joystick_num_buttons[p]) {
+                    return SDL_GetJoystickButton(joy, raw_b) ? 1 : 0;
+                }
+            }
+            if (b >= 192 && b < 256) {
+                int hat_raw = b - 192;
+                int hat_idx = hat_raw / 4;
+                int dir = hat_raw % 4;
+                SDL_Joystick* joy = s_joysticks[p];
+                if (joy && hat_idx < s_joystick_num_hats[p]) {
+                    Uint8 hat = SDL_GetJoystickHat(joy, hat_idx);
+                    Uint8 mask = (dir == 0) ? SDL_HAT_UP : (dir == 1) ? SDL_HAT_DOWN : (dir == 2) ? SDL_HAT_LEFT : SDL_HAT_RIGHT;
+                    return (hat & mask) ? 1 : 0;
+                }
             }
         }
     }
@@ -314,7 +435,7 @@ void InputSystem::set_rumble(unsigned port, uint16_t low_freq, uint16_t high_fre
     if (port >= INPUT_MAX_PORTS) return;
     SDL_Gamepad* gp = s_gamepads[port];
     if (!gp) return;
-    SDL_RumbleGamepad(gp, low_freq, high_freq, 0); // duration 0 = until stopped
+    SDL_RumbleGamepad(gp, low_freq, high_freq, 0);
 }
 
 void InputSystem::stop_rumble(unsigned port) {
@@ -331,13 +452,9 @@ void InputSystem::stop_rumble(unsigned port) {
 void InputSystem::begin_capture(unsigned port, int slot) {
     g_capture_port = (int)(port & 3);
     g_capture_slot = slot;
-    // Swallow whatever is already held
     memcpy(g_pad_prev, g_pad_pressed, sizeof(g_pad_prev));
     while (GetAsyncKeyState(VK_LBUTTON) & 1) { }
     for (int v = 1; v <= 0x1FF; v++) (void)GetAsyncKeyState(v);
-    // Clear gamepad state for capture
-    memcpy(s_pad_prev, g_pad_pressed, sizeof(g_pad_prev));
-    memset(s_pad_prev, 0, sizeof(s_pad_prev));
 }
 
 void InputSystem::cancel_capture() {
@@ -349,7 +466,7 @@ void InputSystem::cancel_capture() {
 void InputSystem::process_capture() {
     if (!capturing()) return;
 
-    // Check keyboard if allowed
+    // Keyboard
     if (g_capture_type == 0 || g_capture_type == 1) {
         for (int v = 1; v <= 0x1FF; v++) {
             if (GetAsyncKeyState(v) & 1) {
@@ -366,7 +483,7 @@ void InputSystem::process_capture() {
         }
     }
 
-    // Check gamepad if allowed
+    // GameController
     if (g_capture_type == 0 || g_capture_type == 2) {
         EnsureSDL();
         for (int p = 0; p < INPUT_MAX_PORTS; p++) {
@@ -383,6 +500,52 @@ void InputSystem::process_capture() {
                     }
                     cancel_capture();
                     return;
+                }
+            }
+        }
+    }
+
+    // Raw Joystick fallback
+    if (g_capture_type == 0 || g_capture_type == 2) {
+        EnsureSDL();
+        for (int p = 0; p < INPUT_MAX_PORTS; p++) {
+            if (!s_joysticks[p]) continue;
+            // Buttons
+            for (int b = 0; b < s_joystick_num_buttons[p] && b < 32; b++) {
+                if (SDL_GetJoystickButton(s_joysticks[p], b)) {
+                    PortMapping& m = g_map[g_capture_port];
+                    // Encode as port*256 + 128 + button (128-159)
+                    uint32_t code = INPUT_XINPUT_BASE + (uint32_t)(p * 256 + 128 + b);
+                    if (g_capture_turbo) {
+                        m.turbo[g_capture_slot] = code;
+                        m.turbo_on[g_capture_slot] = 1;
+                    } else {
+                        m.codes[g_capture_slot][g_capture_key_set] = code;
+                    }
+                    cancel_capture();
+                    return;
+                }
+            }
+            // Hats
+            for (int h = 0; h < s_joystick_num_hats[p]; h++) {
+                Uint8 hat = SDL_GetJoystickHat(s_joysticks[p], h);
+                if (hat) {
+                    PortMapping& m = g_map[g_capture_port];
+                    // Encode hat directions: 192-255 (4 per hat)
+                    for (int d = 0; d < 4; d++) {
+                        Uint8 mask = (d == 0) ? SDL_HAT_UP : (d == 1) ? SDL_HAT_DOWN : (d == 2) ? SDL_HAT_LEFT : SDL_HAT_RIGHT;
+                        if (hat & mask) {
+                            uint32_t code = INPUT_XINPUT_BASE + (uint32_t)(p * 256 + 192 + h * 4 + d);
+                            if (g_capture_turbo) {
+                                m.turbo[g_capture_slot] = code;
+                                m.turbo_on[g_capture_slot] = 1;
+                            } else {
+                                m.codes[g_capture_slot][g_capture_key_set] = code;
+                            }
+                            cancel_capture();
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -406,9 +569,27 @@ int InputSystem::turbo_edge(unsigned port, int slot) const {
     else if (INPUT_IS_GAMEPAD(code)) {
         uint32_t v = code - INPUT_XINPUT_BASE;
         int p = (int)(v / 256), b = (int)(v % 256);
-        if (p >= 0 && p < INPUT_MAX_PORTS && b >= 0 && b < 16) {
-            SDL_Gamepad* gp = s_gamepads[p];
-            if (gp && SDL_GetGamepadButton(gp, (SDL_GamepadButton)b)) held = 1;
+        if (p >= 0 && p < INPUT_MAX_PORTS) {
+            if (b >= 0 && b < 16) {
+                SDL_Gamepad* gp = s_gamepads[p];
+                if (gp && SDL_GetGamepadButton(gp, (SDL_GamepadButton)b)) held = 1;
+            } else if (b >= 128 && b < 160) {
+                int raw_b = b - 128;
+                SDL_Joystick* joy = s_joysticks[p];
+                if (joy && raw_b < s_joystick_num_buttons[p]) {
+                    held = SDL_GetJoystickButton(joy, raw_b) ? 1 : 0;
+                }
+            } else if (b >= 192 && b < 256) {
+                int hat_raw = b - 192;
+                int hat_idx = hat_raw / 4;
+                int dir = hat_raw % 4;
+                SDL_Joystick* joy = s_joysticks[p];
+                if (joy && hat_idx < s_joystick_num_hats[p]) {
+                    Uint8 hat = SDL_GetJoystickHat(joy, hat_idx);
+                    Uint8 mask = (dir == 0) ? SDL_HAT_UP : (dir == 1) ? SDL_HAT_DOWN : (dir == 2) ? SDL_HAT_LEFT : SDL_HAT_RIGHT;
+                    held = (hat & mask) ? 1 : 0;
+                }
+            }
         }
     }
     if (!held) return 0;
@@ -444,12 +625,25 @@ const char* InputSystem::describe(uint32_t code, char* buf, size_t bufSize) {
     if (INPUT_IS_GAMEPAD(code)) {
         uint32_t v = code - INPUT_XINPUT_BASE;
         int p = (int)(v / 256), b = (int)(v % 256);
+        
         if (b >= 0 && b < 16) {
             const char* name = sdl_button_name(b);
             snprintf(buf, bufSize, "Joy%d %s", p + 1, name);
             return buf;
+        } else if (b >= 128 && b < 160) {
+            // Raw joystick button
+            snprintf(buf, bufSize, "Joy%d Btn%d", p + 1, b - 128);
+            return buf;
+        } else if (b >= 192 && b < 256) {
+            // Raw joystick hat
+            int hat_raw = b - 192;
+            int hat_idx = hat_raw / 4;
+            int dir = hat_raw % 4;
+            const char* dirs[4] = { "Hat-Up", "Hat-Down", "Hat-Left", "Hat-Right" };
+            snprintf(buf, bufSize, "Joy%d %s%d", p + 1, dirs[dir], hat_idx + 1);
+            return buf;
         }
-        snprintf(buf, bufSize, "Joy%d Btn%d", p + 1, b);
+        snprintf(buf, bufSize, "Joy%d Code%d", p + 1, b);
         return buf;
     }
 
@@ -539,7 +733,6 @@ bool InputSystem::load(const char* path) {
 // =============================================================================
 
 void InputSystem::apply_defaults(EmuConsoleType console, unsigned port) {
-    // Default keyboard mappings
     struct { EmuInputId id; uint32_t code; } defaults[] = {
         { EMU_ID_UP,    VK_UP }, { EMU_ID_DOWN,  VK_DOWN },
         { EMU_ID_LEFT,  VK_LEFT }, { EMU_ID_RIGHT, VK_RIGHT },
@@ -553,15 +746,13 @@ void InputSystem::apply_defaults(EmuConsoleType console, unsigned port) {
     m.clear();
     for (auto& d : defaults) m.set_by_id(d.id, d.code, 0);
 
-    // Apply SDL gamepad defaults for key set 1 - use actual SDL button enum values
-    // Note: Triggers are axes in SDL3, not buttons. L2/R2 map to analog triggers.
+    // GameController defaults for key set 1
     EnsureSDL();
     int count = 0;
     const SDL_JoystickID* joysticks = SDL_GetJoysticks(&count);
     if (joysticks && count > 0) {
         for (int i = 0; i < count && i < INPUT_MAX_PORTS; i++) {
             if (SDL_IsGamepad(joysticks[i])) {
-                // Map SDL gamepad to our default layout using actual SDL enum values
                 static const struct { EmuInputId id; SDL_GamepadButton sdl_btn; } pad_map[] = {
                     { EMU_ID_A,      SDL_GAMEPAD_BUTTON_SOUTH },
                     { EMU_ID_B,      SDL_GAMEPAD_BUTTON_EAST },
@@ -577,11 +768,10 @@ void InputSystem::apply_defaults(EmuConsoleType console, unsigned port) {
                     { EMU_ID_RIGHT,  SDL_GAMEPAD_BUTTON_DPAD_RIGHT },
                 };
                 for (auto& entry : pad_map) {
-                    // Store as port*256 + sdl_button_enum
                     uint32_t code = INPUT_XINPUT_BASE + (uint32_t)((port & 3) * 256 + entry.sdl_btn);
                     m.set_by_id(entry.id, code, 1);
                 }
-                break; // Only first controller for defaults
+                break;
             }
         }
     }
@@ -616,7 +806,7 @@ int InputSystem::connected_pads() const {
     const SDL_JoystickID* joysticks = SDL_GetJoysticks(&count);
     if (joysticks) {
         for (int i = 0; i < count && i < INPUT_MAX_PORTS; i++) {
-            if (SDL_IsGamepad(joysticks[i])) n++;
+            if (SDL_IsGamepad(joysticks[i]) || (i < INPUT_MAX_PORTS)) n++; // count all joysticks
         }
     }
     return n;
