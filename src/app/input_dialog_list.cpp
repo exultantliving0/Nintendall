@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 //  Nintendall - the "Controller Configuration" window (list-based)
 // =============================================================================
 
@@ -71,10 +71,8 @@ void BuildButtonList() {
                 case EMU_ID_C_DOWN: strcpy(row.name, "C-Down"); break;
                 case EMU_ID_C_LEFT: strcpy(row.name, "C-Left"); break;
                 case EMU_ID_C_RIGHT: strcpy(row.name, "C-Right"); break;
-                case EMU_ID_JOYSTICK_UP: strcpy(row.name, "Joystick Up"); break;
-                case EMU_ID_JOYSTICK_DOWN: strcpy(row.name, "Joystick Down"); break;
-                case EMU_ID_JOYSTICK_LEFT: strcpy(row.name, "Joystick Left"); break;
-                case EMU_ID_JOYSTICK_RIGHT: strcpy(row.name, "Joystick Right"); break;
+                case EMU_ID_ANALOG_LEFT_X: strcpy(row.name, "Joystick X Axis"); break;
+                case EMU_ID_ANALOG_LEFT_Y: strcpy(row.name, "Joystick Y Axis"); break;
                 case EMU_ID_A: strcpy(row.name, "A"); break;
                 case EMU_ID_B: strcpy(row.name, "B"); break;
                 case EMU_ID_X: strcpy(row.name, "X"); break;
@@ -504,3 +502,6 @@ bool ShowInputDialog(HWND parent, EmuConsoleType console) {
     g_dlg.accepted = false;
     return accepted;
 }
+
+
+

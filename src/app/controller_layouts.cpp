@@ -436,3 +436,4 @@ void pad_paint_state(HDC dc, HFONT box_font, const PadLayout* pad,
         DeleteObject(lf);
     }
 }
+

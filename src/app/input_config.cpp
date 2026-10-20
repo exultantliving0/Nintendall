@@ -494,3 +494,4 @@ bool InputSystem::load(const char* path) {
     fclose(f);
     return true;
 }
+
