@@ -109,6 +109,9 @@ public:
     void set_capture_key_set(int k) {
         if (k >= 0 && k < INPUT_KEY_SETS) g_capture_key_set = k;
     }
+    // Capture type: 0 = any input, 1 = keyboard/mouse only, 2 = gamepad only
+    void set_capture_type(int t) { g_capture_type = t; }
+    int capture_type() const { return g_capture_type; }
     // Whether the armed slot is binding its turbo key rather than a key set.
     void set_capture_turbo(bool t) { g_capture_turbo = t ? 1 : 0; }
     bool capturing_turbo() const { return g_capture_turbo != 0; }
@@ -144,6 +147,7 @@ private:
     int         g_capture_port = -1;
     int         g_capture_slot = -1;
     int         g_capture_key_set = 0;
+    int         g_capture_type  = 0;  // 0 any, 1 keyboard, 2 gamepad
     int         g_capture_turbo  = 0;
     int         g_turbo_speed   = 6;
     EmuConsoleType g_console     = EMU_CONSOLE_NES;

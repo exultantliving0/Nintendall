@@ -174,7 +174,8 @@ static void SetStatus(const wchar_t* fmt, ...) {
     _vsnwprintf(buf, 511, fmt, ap);
     va_end(ap);
     buf[511] = 0;
-    SetWindowTextW(g_hwnd, buf);
+    // Keep the title bar fixed at "Nintendall" - status messages stay in the
+    // status area only and never change the window title.
 }
 
 static std::wstring Utf8ToWide(const char* s) {

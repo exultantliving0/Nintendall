@@ -5,7 +5,7 @@
 add_executable(nintendall WIN32
     main.cpp
     input_config.cpp
-    input_dialog.cpp
+    input_dialog_list.cpp
     controller_layouts.cpp
 )
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Nintendall - Common C API
  * 
  * Every emulator core must implement this interface.
@@ -293,6 +293,14 @@ typedef enum EmuInputId {
     EMU_ID_DOWN,
     EMU_ID_LEFT,
     EMU_ID_RIGHT,
+       EMU_ID_C_UP,
+       EMU_ID_C_DOWN,
+       EMU_ID_C_LEFT,
+       EMU_ID_C_RIGHT,
+       EMU_ID_JOYSTICK_UP,
+       EMU_ID_JOYSTICK_DOWN,
+       EMU_ID_JOYSTICK_LEFT,
+       EMU_ID_JOYSTICK_RIGHT,
     
     // Analog axes
     EMU_ID_ANALOG_LEFT_X = 100,

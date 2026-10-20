@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 //  Nintendall - input: gamepad polling, the button-mapping store and turbo
 //  See input_config.h for the physical-input code scheme.
 // =============================================================================
@@ -153,17 +153,17 @@ const DefaultEntry kGBA[] = {
     { EMU_ID_START,  (uint32_t)VK_RETURN }, { EMU_ID_SELECT, (uint32_t)VK_SHIFT },
 };
 
-// The N64 core reads twelve inputs and calls X/Y its two C buttons.
-const DefaultEntry kN64[] = {
-    { EMU_ID_UP,     (uint32_t)VK_UP     }, { EMU_ID_DOWN,   (uint32_t)VK_DOWN  },
-    { EMU_ID_LEFT,   (uint32_t)VK_LEFT   }, { EMU_ID_RIGHT,  (uint32_t)VK_RIGHT },
-    { EMU_ID_A,      (uint32_t)'X'       }, { EMU_ID_B,      (uint32_t)'Z'      },
-    { EMU_ID_X,      (uint32_t)'C'       }, { EMU_ID_Y,      (uint32_t)'V'      },
-    { EMU_ID_L,      (uint32_t)'Q'       }, { EMU_ID_R,      (uint32_t)'W'      },
-    { EMU_ID_START,  (uint32_t)VK_RETURN }, { EMU_ID_SELECT, (uint32_t)VK_SHIFT },
-};
-
-// XInput defaults, for key set #2.  These carry the button index for port 0;
+   // The N64 core reads twelve inputs plus an analog joystick.
+   const DefaultEntry kN64[] = {
+       { EMU_ID_UP,     (uint32_t)VK_UP     }, { EMU_ID_DOWN,   (uint32_t)VK_DOWN  },
+       { EMU_ID_LEFT,   (uint32_t)VK_LEFT   }, { EMU_ID_RIGHT,  (uint32_t)VK_RIGHT },
+       { EMU_ID_A,      (uint32_t)'X'       }, { EMU_ID_B,      (uint32_t)'Z'      },
+       { EMU_ID_C_UP,   (uint32_t)'C'       }, { EMU_ID_C_DOWN, (uint32_t)'V'      },
+       { EMU_ID_C_LEFT, (uint32_t)'N'       }, { EMU_ID_C_RIGHT,(uint32_t)'M'      },
+       { EMU_ID_L,      (uint32_t)'Q'       }, { EMU_ID_R,      (uint32_t)'W'      },
+       { EMU_ID_Y,      (uint32_t)'T'       },  // Z trigger
+       { EMU_ID_START,  (uint32_t)VK_RETURN },
+   };
 // apply_defaults adds INPUT_XINPUT_BASE + 1 to turn an index into a stored code.
 const DefaultEntry kXInputPad[] = {
     { EMU_ID_A,      9  },   // RB
@@ -275,33 +275,41 @@ void InputSystem::poll() {
     // keyboard is checked with GetAsyncKeyState's edge bit so a held key does
     // not re-bind itself every frame.
     PortMapping& m = g_map[g_capture_port];
-    for (int v = 1; v <= 0x1FF; v++) {
-        if (!(GetAsyncKeyState(v) & 1)) continue;       // 1 == pressed since last call
-        if (g_capture_turbo) {
-            m.turbo[g_capture_slot] = (uint32_t)v;
-            m.turbo_on[g_capture_slot] = 1;
-        } else {
-            m.codes[g_capture_slot][g_capture_key_set] = (uint32_t)v;
-        }
-        g_capture_port = -1;
-        g_capture_slot = -1;
-        return;
-    }
-    for (int p = 0; p < INPUT_MAX_PORTS; p++) {
-        int fresh = g_pad_pressed[p] & ~g_pad_prev[p];
-        if (!fresh) continue;
-        for (int b = 0; b < XINPUT_BUTTON_COUNT; b++) {
-            if (!(fresh & XINPUT_BUTTONS[b].mask)) continue;
-            uint32_t code = INPUT_XINPUT_BASE + (uint32_t)(p * 256 + b);
+
+    // Check keyboard if allowed
+    if (g_capture_type == 0 || g_capture_type == 1) {
+        for (int v = 1; v <= 0x1FF; v++) {
+            if (!(GetAsyncKeyState(v) & 1)) continue;       // 1 == pressed since last call
             if (g_capture_turbo) {
-                m.turbo[g_capture_slot] = code;
+                m.turbo[g_capture_slot] = (uint32_t)v;
                 m.turbo_on[g_capture_slot] = 1;
             } else {
-                m.codes[g_capture_slot][g_capture_key_set] = code;
+                m.codes[g_capture_slot][g_capture_key_set] = (uint32_t)v;
             }
             g_capture_port = -1;
             g_capture_slot = -1;
             return;
+        }
+    }
+
+    // Check gamepad if allowed
+    if (g_capture_type == 0 || g_capture_type == 2) {
+        for (int p = 0; p < INPUT_MAX_PORTS; p++) {
+            int fresh = g_pad_pressed[p] & ~g_pad_prev[p];
+            if (!fresh) continue;
+            for (int b = 0; b < XINPUT_BUTTON_COUNT; b++) {
+                if (!(fresh & XINPUT_BUTTONS[b].mask)) continue;
+                uint32_t code = INPUT_XINPUT_BASE + (uint32_t)(p * 256 + b);
+                if (g_capture_turbo) {
+                    m.turbo[g_capture_slot] = code;
+                    m.turbo_on[g_capture_slot] = 1;
+                } else {
+                    m.codes[g_capture_slot][g_capture_key_set] = code;
+                }
+                g_capture_port = -1;
+                g_capture_slot = -1;
+                return;
+            }
         }
     }
 }

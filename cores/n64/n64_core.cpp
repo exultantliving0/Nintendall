@@ -184,23 +184,25 @@ static int n64_run_frame(EmuCoreHandle core) {
         if (down(EMU_ID_A))      buttons |= 0x0080u;  // A_BUTTON
         if (down(EMU_ID_B))      buttons |= 0x0040u;  // B_BUTTON
         if (down(EMU_ID_Y))      buttons |= 0x0020u;  // Z_TRIG
-        if (down(EMU_ID_X))      buttons |= 0x0800u;  // U_CBUTTON
+        if (down(EMU_ID_C_UP) || down(EMU_ID_X)) buttons |= 0x0800u;  // U_CBUTTON
+        if (down(EMU_ID_C_DOWN)) buttons |= 0x0400u;  // D_CBUTTON
+        if (down(EMU_ID_C_LEFT)) buttons |= 0x0200u;  // L_CBUTTON
+        if (down(EMU_ID_C_RIGHT)) buttons |= 0x0100u;  // R_CBUTTON
         if (down(EMU_ID_START))  buttons |= 0x0010u;  // START_BUTTON
-        if (down(EMU_ID_L))      buttons |= shift ? 0x0200u : 0x2000u;  // L_CBUTTON / L_TRIG
-        if (down(EMU_ID_R))      buttons |= shift ? 0x0100u : 0x1000u;  // R_CBUTTON / R_TRIG
+        if (down(EMU_ID_L))      buttons |= 0x2000u;  // L_TRIG
+        if (down(EMU_ID_R))      buttons |= 0x1000u;  // R_TRIG
 
-        if (shift) {
-            if (down(EMU_ID_UP))    buttons |= 0x0800u;  // U_CBUTTON
-            if (down(EMU_ID_DOWN))  buttons |= 0x0400u;  // D_CBUTTON
-            if (down(EMU_ID_LEFT))  buttons |= 0x0200u;  // L_CBUTTON
-            if (down(EMU_ID_RIGHT)) buttons |= 0x0100u;  // R_CBUTTON
-            stick_x = stick_y = 0;
-        } else {
-            if (down(EMU_ID_UP))    { buttons |= 0x0008u; stick_y =  80; }  // U_DPAD
-            if (down(EMU_ID_DOWN))  { buttons |= 0x0004u; stick_y = -80; }  // D_DPAD
-            if (down(EMU_ID_LEFT))  { buttons |= 0x0002u; stick_x = -80; }  // L_DPAD
-            if (down(EMU_ID_RIGHT)) { buttons |= 0x0001u; stick_x =  80; }  // R_DPAD
-        }
+        // D-pad (also sets analog stick)
+        if (down(EMU_ID_UP))    { buttons |= 0x0008u; stick_y =  80; }
+        if (down(EMU_ID_DOWN))  { buttons |= 0x0004u; stick_y = -80; }
+        if (down(EMU_ID_LEFT))  { buttons |= 0x0002u; stick_x = -80; }
+        if (down(EMU_ID_RIGHT)) { buttons |= 0x0001u; stick_x =  80; }
+
+        // Joystick (overrides D-pad stick values when active)
+        if (down(EMU_ID_JOYSTICK_UP))    stick_y =  80;
+        if (down(EMU_ID_JOYSTICK_DOWN))  stick_y = -80;
+        if (down(EMU_ID_JOYSTICK_LEFT))  stick_x = -80;
+        if (down(EMU_ID_JOYSTICK_RIGHT)) stick_x =  80;
     }
 
     n64_glue_set_input(buttons, stick_x, stick_y);

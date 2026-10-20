@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 //  Nintendall - controller artwork for the mapping dialog
 //  See controller_layouts.h for the design.
 // =============================================================================
@@ -163,48 +163,63 @@ const PadLayout kPadGba = {
 };
 
 // -----------------------------------------------------------------------------
-// Nintendo 64
-//
-// Mesen has no N64 pad, so this follows its visual language rather than
-// copying anything: the same pale housings and fixed-width binding boxes,
-// arranged the way the real controller is - L on the left shoulder, R on the
-// right, the C buttons beside A and B, Start and Select down the middle.
-//
-// Only the twelve inputs the core reads are offered.  X and Y are its two C
-// buttons, so they are labelled C-Up and C-Down.
-// -----------------------------------------------------------------------------
-
-const PadHousing kHousingsN64[] = {
-    { 1,  14,  44, 200, 150 },   // d-pad ring
-    { 1, 330,  46, 242, 148 },   // face-button ring
-};
-
-const PadButton kButtonsN64[] = {
-    BTN(EMU_ID_UP,   114,  70, 96, "", 0, 0, LBL_NONE, NOTURBO),
-    BTN(EMU_ID_LEFT,  64, 119, 96, "", 0, 0, LBL_NONE, NOTURBO),
-    BTN(EMU_ID_RIGHT,164, 119, 96, "", 0, 0, LBL_NONE, NOTURBO),
-    BTN(EMU_ID_DOWN, 114, 168, 96, "", 0, 0, LBL_NONE, NOTURBO),
-
-    BTN(EMU_ID_L, 160, 18, kBoxSh, "L", 160,  44, LBL_BELOW, NOTURBO),
-    BTN(EMU_ID_R, 520, 18, kBoxSh, "R", 520,  44, LBL_BELOW, NOTURBO),
-
-    // The two C buttons sit to the left of A and B, as on the real pad.
-    BTN(EMU_ID_X, 380,  92, kBox, "C-Up",   380,  66, LBL_ABOVE, NOTURBO),
-    BTN(EMU_ID_Y, 380, 150, kBox, "C-Down", 380, 176, LBL_BELOW, NOTURBO),
-
-    BTN(EMU_ID_A, 486,  92, kBox, "A", 486,  66, LBL_ABOVE, NOTURBO),
-    BTN(EMU_ID_B, 486, 150, kBox, "B", 486, 176, LBL_BELOW, NOTURBO),
-
-    BTN(EMU_ID_START,  272, 102, kBox, "Start",  272, 128, LBL_BELOW, NOTURBO),
-    BTN(EMU_ID_SELECT, 272, 152, kBox, "Select", 272, 178, LBL_BELOW, NOTURBO),
-};
-const PadLayout kPadN64 = {
-    "Nintendo 64", 585, 220,
-    kHousingsN64, (int)(sizeof(kHousingsN64) / sizeof(kHousingsN64[0])),
-    kButtonsN64,  (int)(sizeof(kButtonsN64)  / sizeof(kButtonsN64[0])),
-    0   // no turbo
-};
-
+   // -----------------------------------------------------------------------------
+   // Nintendo 64
+   //
+   // Button names match the real N64 controller.  The C buttons (C-Up, C-Down,
+   // C-Left, C-Right) are physically separate from the D-pad and have their own
+   // IDs.  EMU_ID_Y is the Z trigger (back of controller).  EMU_ID_X is kept as
+   // an alias for C-Up for backward compatibility with existing mappings.
+   //
+   // The joystick is analog and can be bound as four digital directions
+   // (Joystick Up/Down/Left/Right) that set the stick values directly.
+   //
+   // SELECT is no longer used as a shift modifier - L and R are always triggers.
+   //
+   const PadHousing kHousingsN64[] = {
+       { 1,  14,  44, 200, 150 },   // d-pad ring
+       { 1, 330,  46, 242, 148 },   // face-button ring
+   };
+   
+   const PadButton kButtonsN64[] = {
+       // D-pad
+       BTN(EMU_ID_UP,    114,  70, 96, "DPad Up",    0, 0, LBL_NONE, NOTURBO),
+       BTN(EMU_ID_DOWN,  114, 168, 96, "DPad Down",  0, 0, LBL_NONE, NOTURBO),
+       BTN(EMU_ID_LEFT,   64, 119, 96, "DPad Left",   0, 0, LBL_NONE, NOTURBO),
+       BTN(EMU_ID_RIGHT, 164, 119, 96, "DPad Right",  0, 0, LBL_NONE, NOTURBO),
+   
+       // C buttons (physically separate from D-pad)
+       BTN(EMU_ID_C_UP,    340,  80, kBox, "C-Up",   340,  54, LBL_ABOVE, NOTURBO),
+       BTN(EMU_ID_C_DOWN,  340, 140, kBox, "C-Down", 340, 114, LBL_BELOW, NOTURBO),
+       BTN(EMU_ID_C_LEFT,  300, 140, kBox, "C-Left", 300, 114, LBL_BELOW, NOTURBO),
+       BTN(EMU_ID_C_RIGHT, 380, 140, kBox, "C-Right",380, 114, LBL_BELOW, NOTURBO),
+   
+       // Face buttons
+       BTN(EMU_ID_A, 486,  92, kBox, "A", 486,  66, LBL_ABOVE, NOTURBO),
+       BTN(EMU_ID_B, 486, 150, kBox, "B", 486, 176, LBL_BELOW, NOTURBO),
+   
+       // Shoulder buttons (always triggers)
+       BTN(EMU_ID_L, 160, 18, kBoxSh, "L", 160, 44, LBL_BELOW, NOTURBO),
+       BTN(EMU_ID_R, 520, 18, kBoxSh, "R", 520, 44, LBL_BELOW, NOTURBO),
+   
+       // Z trigger (back of controller)
+       BTN(EMU_ID_Y, 330, 18, kBoxSh, "Z", 330, 44, LBL_BELOW, NOTURBO),
+   
+       // Joystick (digital directions)
+       BTN(EMU_ID_JOYSTICK_UP,    340, 18, kBox, "Joy Up",    340,  -8, LBL_ABOVE, NOTURBO),
+       BTN(EMU_ID_JOYSTICK_DOWN,  340, 184, kBox, "Joy Down", 340, 158, LBL_BELOW, NOTURBO),
+       BTN(EMU_ID_JOYSTICK_LEFT,  300, 140, kBox, "Joy Left", 300, 114, LBL_BELOW, NOTURBO),
+       BTN(EMU_ID_JOYSTICK_RIGHT, 380, 140, kBox, "Joy Right",380, 114, LBL_BELOW, NOTURBO),
+   
+       // Start
+       BTN(EMU_ID_START,  272, 102, kBox, "Start",  272, 128, LBL_BELOW, NOTURBO),
+   };
+   const PadLayout kPadN64 = {
+       "Nintendo 64", 585, 220,
+       kHousingsN64, (int)(sizeof(kHousingsN64) / sizeof(kHousingsN64[0])),
+       kButtonsN64,  (int)(sizeof(kButtonsN64)  / sizeof(kButtonsN64[0])),
+       0   // no turbo
+   };
 #undef BTN
 #undef DPAD
 #undef NOTURBO
