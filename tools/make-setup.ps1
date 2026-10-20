@@ -111,8 +111,12 @@ if (Test-Path $stageDir) { Remove-Item -Recurse -Force $stageDir }
 if (Test-Path $payload)  { Remove-Item -Force $payload }
 New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
+# SDL3.dll must be copied from build output (dynamic linking)
+$sdl3Dll = Join-Path $buildDir 'bin\SDL3.dll'
+
 $files = @(
     @{ From = $appExe;                            To = 'nintendall.exe' }
+    @{ From = $sdl3Dll;                            To = 'SDL3.dll' }
     @{ From = $uninstExe;                          To = 'Uninstall.exe' }
     @{ From = (Join-Path $repo 'README.md');       To = 'README.md' }
     @{ From = (Join-Path $repo 'assets\config.ini');   To = 'assets\config.ini' }
