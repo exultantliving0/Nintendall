@@ -114,6 +114,33 @@ static int s_pad_prev[INPUT_MAX_PORTS] = { 0 };
 // Helpers
 // =============================================================================
 
+// NSO (Nintendo Switch Online) controller mappings - not in SDL3's built-in DB yet
+// VID: 0x057e (Nintendo), PIDs: 0x2006/2007=NES, 0x2008=SNES, 0x2009=N64, 0x200a=Genesis
+static const char* nso_mappings[] = {
+    // NSO NES Controller (and Famicom) - D-pad, A, B, Start, Select
+    "050000007e0500000620000000000000,Nintendo Switch Online NES Controller,a:b0,b:b1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,back:b8,",
+    "050000007e0500000720000000000000,Nintendo Switch Online Famicom Controller,a:b0,b:b1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,back:b8,",
+    
+    // NSO SNES Controller - D-pad, A, B, X, Y, L, R, Start, Select
+    "050000007e0500000820000000000000,Nintendo Switch Online SNES Controller,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,back:b8,",
+    
+    // NSO N64 Controller - A, B, C-buttons (X,Y), L, R, Z (leftshoulder), Start, D-pad
+    // N64 uses: A=b0, B=b1, C-Up/C-Down/C-Left/C-Right mapped to right stick or dpad
+    "050000007e0500000920000000000000,Nintendo Switch Online N64 Controller,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,guide:b8,",
+    
+    // NSO Sega Genesis Controller - 6-button: A, B, C, X, Y, Z, Start, Mode
+    "050000007e0500000a20000000000000,Nintendo Switch Online Genesis Controller,a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,start:b9,guide:b8,",
+};
+
+// Add NSO controller mappings to SDL's gamepad database at runtime
+static void AddNSOMappings() {
+    for (int i = 0; i < (int)(sizeof(nso_mappings)/sizeof(nso_mappings[0])); i++) {
+        if (SDL_AddGamepadMapping(nso_mappings[i]) < 0) {
+            // Mapping might already exist or be invalid - ignore
+        }
+    }
+}
+
 static void EnsureSDL() {
     if (s_sdl_initialized_once) return;
     s_sdl_initialized_once = true;
@@ -122,6 +149,7 @@ static void EnsureSDL() {
         return;
     }
     s_sdl_initialized = true;
+    AddNSOMappings();
 }
 
 static void UpdateGamepadList() {
