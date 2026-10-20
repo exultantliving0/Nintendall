@@ -117,6 +117,12 @@ public:
     bool capturing_turbo() const { return g_capture_turbo != 0; }
     void begin_capture(unsigned port, int slot);
     void cancel_capture();
+    // Process pending capture (called from poll or dialog)
+    void process_capture();
+
+    // --- rumble / haptics ---------------------------------------------------
+    void set_rumble(unsigned port, uint16_t low_freq, uint16_t high_freq);
+    void stop_rumble(unsigned port);
 
     // --- turbo --------------------------------------------------------------
     int  turbo_speed() const { return g_turbo_speed; }
@@ -144,6 +150,7 @@ private:
     PortMapping g_map[INPUT_MAX_PORTS];
     int         g_pad_pressed[INPUT_MAX_PORTS];   // bitmask of XINPUT_BUTTONS
     int         g_pad_prev[INPUT_MAX_PORTS];      // previous frame, for edges
+    int8_t      g_analog[INPUT_MAX_PORTS][6];     // analog axes: LX, LY, RX, RY, LT, RT
     int         g_capture_port = -1;
     int         g_capture_slot = -1;
     int         g_capture_key_set = 0;
