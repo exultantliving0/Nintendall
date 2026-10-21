@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/nintendall-512.png" width="120" alt="Nintendall icon">
+</p>
+
 # Nintendall
 
 Many Nintendo systems in one executable. Load a ROM, the console is detected

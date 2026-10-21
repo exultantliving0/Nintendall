@@ -1,0 +1,3 @@
+// Nintendall application icon.  The numeric ID must stay in sync with
+// IDI_NINTENDALL in src/app/main.cpp and installer/setup.cpp.
+1 ICON "nintendall.ico"

@@ -53,6 +53,9 @@
 #define PRODUCT_EXE       WSTR_("nintendall.exe")
 #endif
 
+// Resource ID in the icon object linked into both setup.exe and Uninstall.exe.
+#define IDI_NINTENDALL 1
+
 static const wchar_t* const kAppKey =
     L"Software\\" PRODUCT_NAME L"\\Setup";
 static const wchar_t* const kUninstKey =
@@ -776,6 +779,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
     wc.hInstance     = inst;
     wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.hIcon         = (HICON)LoadImageW(
+        inst, MAKEINTRESOURCEW(IDI_NINTENDALL), IMAGE_ICON,
+        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
+    wc.hIconSm       = (HICON)LoadImageW(
+        inst, MAKEINTRESOURCEW(IDI_NINTENDALL), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+    if (!wc.hIcon)   wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    if (!wc.hIconSm) wc.hIconSm = wc.hIcon;
     wc.lpszClassName = L"NintendallSetupDlg";
     RegisterClassExW(&wc);
 

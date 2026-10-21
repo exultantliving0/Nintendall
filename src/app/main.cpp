@@ -72,6 +72,9 @@
 
 #define APP_TITLE L"Nintendall"
 
+// Resource ID in assets\nintendall.rc.
+#define IDI_NINTENDALL 1
+
 // =============================================================================
 // Audio
 // =============================================================================
@@ -1380,6 +1383,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, PWSTR cmdLine, int sho
     wc.hInstance     = hInstance;
     wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    wc.hIcon         = (HICON)LoadImageW(
+        hInstance, MAKEINTRESOURCEW(IDI_NINTENDALL), IMAGE_ICON,
+        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
+    wc.hIconSm       = (HICON)LoadImageW(
+        hInstance, MAKEINTRESOURCEW(IDI_NINTENDALL), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+    if (!wc.hIcon)   wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    if (!wc.hIconSm) wc.hIconSm = wc.hIcon;
     wc.lpszClassName = L"NintendallWindow";
     RegisterClassExW(&wc);
 

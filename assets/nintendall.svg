@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FF3D57"/>
+      <stop offset="0.48" stop-color="#D1122F"/>
+      <stop offset="1" stop-color="#7A0618"/>
+    </linearGradient>
+    <linearGradient id="cream" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#FFFDF8"/>
+      <stop offset="0.6" stop-color="#FFF3DF"/>
+      <stop offset="1" stop-color="#EAD6B8"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.05"/>
+    </linearGradient>
+    <radialGradient id="light" cx="0.2" cy="0.12" r="0.8">
+      <stop offset="0" stop-color="#FF8A98" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#FF8A98" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="24"/>
+    </filter>
+    <clipPath id="tile">
+      <rect x="24" y="24" width="976" height="976" rx="210"/>
+    </clipPath>
+    <pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse">
+      <path d="M64 0H0V64" fill="none" stroke="#4A0310" stroke-opacity="0.13" stroke-width="2"/>
+    </pattern>
+  </defs>
+
+  <rect x="24" y="24" width="976" height="976" rx="210" fill="url(#bg)"/>
+  <g clip-path="url(#tile)">
+    <rect x="24" y="24" width="976" height="976" fill="url(#grid)"/>
+    <rect x="24" y="24" width="976" height="976" fill="url(#light)"/>
+    <ellipse cx="512" cy="930" rx="430" ry="220" fill="#4A0310" opacity="0.28" filter="url(#shadow)"/>
+  </g>
+  <rect x="27" y="27" width="970" height="970" rx="207" fill="none" stroke="url(#rim)" stroke-width="6"/>
+
+  <!-- cartridge grip -->
+  <g fill="#FFF3DF" opacity="0.85">
+    <rect x="332" y="178" width="80" height="14" rx="7"/>
+    <rect x="430" y="178" width="80" height="14" rx="7"/>
+    <rect x="528" y="178" width="80" height="14" rx="7"/>
+    <rect x="626" y="178" width="80" height="14" rx="7"/>
+  </g>
+
+  <!-- N shadow -->
+  <path d="M330 748 V300 L694 748 V300"
+        fill="none" stroke="#4A0310" stroke-opacity="0.55"
+        stroke-width="158" stroke-linecap="round" stroke-linejoin="round"
+        transform="translate(0 26)" filter="url(#shadow)"/>
+
+  <!-- N -->
+  <path d="M330 748 V300 L694 748 V300"
+        fill="none" stroke="url(#cream)"
+        stroke-width="154" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- inner bevel -->
+  <path d="M330 748 V300 L694 748 V300"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.3"
+        stroke-width="8" stroke-linecap="round" stroke-linejoin="round"
+        transform="translate(-8 -10)"/>
+
+  <!-- cartridge pins -->
+  <g>
+    <rect x="342" y="846" width="62" height="82" rx="18" fill="#FFF3DF"/>
+    <rect x="424" y="846" width="62" height="82" rx="18" fill="#FFF3DF"/>
+    <rect x="538" y="846" width="62" height="82" rx="18" fill="#FFF3DF"/>
+    <rect x="620" y="846" width="62" height="82" rx="18" fill="#FFF3DF"/>
+  </g>
+</svg>

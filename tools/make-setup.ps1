@@ -45,6 +45,9 @@ $stageDir  = Join-Path $buildDir 'stage'
 $payload   = Join-Path $buildDir 'package.bin'
 $rcFile    = Join-Path $buildDir 'payload.rc'
 $rcObj     = Join-Path $buildDir 'payload_res.o'
+$iconRc    = Join-Path $buildDir 'icon.rc'
+$iconObj   = Join-Path $buildDir 'icon_res.o'
+$iconPath  = Join-Path $repo 'assets\nintendall.ico'
 $stubExe   = Join-Path $buildDir 'setup_stub.exe'
 $uninstExe = Join-Path $buildDir 'uninstall_stub.exe'
 $appExe    = Join-Path $buildDir 'bin\nintendall.exe'
@@ -85,7 +88,18 @@ if (-not (Test-Path $appExe)) { throw "Missing $appExe - build it first." }
 Sign-IfPossible $appExe
 
 # -----------------------------------------------------------------------------
-# 2. Uninstaller stub
+# 2. Icon resource (shared by the installer and the uninstaller)
+# -----------------------------------------------------------------------------
+if (-not (Test-Path $iconPath)) { throw "Missing $iconPath" }
+Write-Step 'Compiling icon resource'
+# The .rc lives in build\, so this path is resolved relative to the repo root.
+# Forward slashes avoid the RC string parser treating backslashes as escapes.
+Set-Content -Path $iconRc -Value '1 ICON "../assets/nintendall.ico"' -Encoding ascii
+& windres $iconRc '-O' 'coff' '-o' $iconObj
+if ($LASTEXITCODE -ne 0) { throw 'windres failed to compile the icon resource.' }
+
+# -----------------------------------------------------------------------------
+# 3. Uninstaller stub
 # -----------------------------------------------------------------------------
 # Libraries must follow the source file on the command line, or the linker
 # drops them before it has seen the objects that need them.
@@ -99,12 +113,12 @@ $gxxLibs  = @(
 )
 
 Write-Step 'Compiling uninstaller'
-& g++ @gxxFlags '-DUNINSTALLER' '-o' $uninstExe $setupSrc @gxxLibs
+& g++ @gxxFlags '-DUNINSTALLER' '-o' $uninstExe $setupSrc $iconObj @gxxLibs
 if ($LASTEXITCODE -ne 0) { throw 'Compiling the uninstaller stub failed.' }
 Sign-IfPossible $uninstExe
 
 # -----------------------------------------------------------------------------
-# 3. Collect the payload
+# 4. Collect the payload
 # -----------------------------------------------------------------------------
 Write-Step 'Collecting payload'
 if (Test-Path $stageDir) { Remove-Item -Recurse -Force $stageDir }
@@ -131,7 +145,7 @@ foreach ($f in $files) {
 }
 
 # -----------------------------------------------------------------------------
-# 4. Build the package: header + records + path table + raw file bytes
+# 5. Build the package: header + records + path table + raw file bytes
 # -----------------------------------------------------------------------------
 Write-Step 'Building package'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -214,7 +228,7 @@ $total = '{0:N0}' -f (Get-Item $payload).Length
 Write-Host "    $count files, $bytes bytes of content, $total bytes packaged"
 
 # -----------------------------------------------------------------------------
-# 5. Embed the package and link the installer
+# 6. Embed the package and link the installer
 # -----------------------------------------------------------------------------
 Write-Step 'Embedding payload and linking installer'
 
@@ -225,7 +239,7 @@ Set-Content -Path $rcFile -Value "1 RCDATA `"package.bin`"" -Encoding ascii
 & windres $rcFile '-O' 'coff' '-o' $rcObj
 if ($LASTEXITCODE -ne 0) { throw 'windres failed to embed the payload.' }
 
-& g++ @gxxFlags '-o' $stubExe $setupSrc $rcObj @gxxLibs
+& g++ @gxxFlags '-o' $stubExe $setupSrc $rcObj $iconObj @gxxLibs
 if ($LASTEXITCODE -ne 0) { throw 'Linking the installer stub failed.' }
 
 $outExe = Join-Path $OutputDir 'Nintendall-Setup.exe'

@@ -9,6 +9,12 @@ add_executable(nintendall WIN32
     controller_layouts.cpp
 )
 
+if(WIN32)
+    target_sources(nintendall PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../assets/nintendall.rc
+    )
+endif()
+
 target_link_libraries(nintendall PRIVATE
     emu_framework
     ${EMU_CORE_TARGETS}
