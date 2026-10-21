@@ -106,9 +106,11 @@ set_target_properties(m64p_rsp_cxd4 PROPERTIES POSITION_INDEPENDENT_CODE ON
 # -----------------------------------------------------------------------------
 # mupen64plus-core
 #
-# Interpreter build: cached_interp.c / pure_interp.c are always compiled;
-# the dynarec sources (recomp.c, x86_64/{assemble,dynarec,regcache}.c,
-# dyna_start.asm) are omitted.
+# cached_interp.c / pure_interp.c are always compiled; the runtime picks
+# between them and the dynarec via the Core/R4300Emulator setting.  When the
+# dynarec is enabled (see "x86-64 dynarec" below) recomp.c,
+# x86_64/{assemble,dynarec,regcache}.c and the assembled dyna_start.asm are
+# added to this target on top of that.
 #
 # Excluded: api/{debugger,vidext}.c, main/{eventloop,screenshot,
 # sdl_key_converter,lirc,netplay,profile}.c, osd/ (M64P_OSD undefined ->
@@ -255,7 +257,11 @@ if(N64_DYNAREC AND CMAKE_SIZEOF_VOID_P EQUAL 8
 
     add_custom_command(
         OUTPUT "${DYNA_START_OBJ}"
-        COMMAND "${NASM_EXE}" -f win64
+        # -d WIN64 is required: dyna_start.asm uses %ifdef WIN64 to keep the
+        # stack 16-byte aligned and to call the code pointer in %rcx (the Win64
+        # first argument) instead of %rdi (SysV).  Without it the JIT calls a
+        # garbage pointer.  Upstream's MSVC project passes the same flag.
+        COMMAND "${NASM_EXE}" -f win64 -d WIN64
                 -I "${CMAKE_CURRENT_BINARY_DIR}/"
                 -I "${M64P_SRC}/device/r4300/x86_64/"
                 "${M64P_SRC}/device/r4300/x86_64/dyna_start.asm"
@@ -275,6 +281,12 @@ if(N64_DYNAREC AND CMAKE_SIZEOF_VOID_P EQUAL 8
         "${CMAKE_CURRENT_BINARY_DIR}"
         "${M64P_SRC}/device/r4300/x86_64")
     target_compile_definitions(m64p_core PRIVATE -DDYNAREC)
+    # Tells n64_glue.c that the dynarec objects are present, so it must not
+    # define its interpreter-only dyna_jump/dyna_stop/dynarec_jump_to stubs.
+    # The app links with --allow-multiple-definition and n64_core comes first
+    # on the link line, so duplicate stubs would silently beat the real
+    # implementations and break generated code.
+    set(N64_HAS_DYNAREC TRUE)
     message(STATUS "N64: x86-64 dynarec enabled (nasm: ${NASM_EXE})")
 else()
     message(WARNING
@@ -305,6 +317,9 @@ target_include_directories(n64_core PRIVATE
     "${ZLIB}"
 )
 target_compile_definitions(n64_core PRIVATE -DWIN32)
+if(N64_HAS_DYNAREC)
+    target_compile_definitions(n64_core PRIVATE -DN64_HAS_DYNAREC)
+endif()
 set_target_properties(n64_core PROPERTIES POSITION_INDEPENDENT_CODE ON
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 

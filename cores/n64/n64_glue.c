@@ -234,10 +234,20 @@ void msg_debug(const char* err, ...)
 }
 
 /* The classic dynarec interface (declared in device/r4300/recomp.h) is
- * referenced from cp0.c / interrupt.c / r4300_core.c even when the
- * interpreter is used (the calls are guarded by emumode == DYNAREC, which
- * never happens here).  The dynarec sources are not compiled, so provide
- * linking stubs. */
+ * referenced from cp0.c / interrupt.c / r4300_core.c unconditionally (the
+ * calls sit behind a runtime emumode == DYNAREC check), so interpreter-only
+ * builds need linking stubs.  When the dynarec is compiled in
+ * (N64_HAS_DYNAREC, set by CMake when it is) the real implementations come
+ * from device/r4300/x86_64/dynarec.c and recomp.c.
+ *
+ * Defining the stubs in that case would be worse than a link error:
+ * nintendall links with --allow-multiple-definition (needed because zlib's
+ * crc32 is shared with another core) and n64_core comes first on the link
+ * line, so the empty stubs would silently override the real functions.
+ * dyna_jump/dyna_stop are how generated code learns where to resume; without
+ * them the JIT jumps to a stale address and the process dies - which is
+ * exactly the access violation that kept this core on the interpreter. */
+#ifndef N64_HAS_DYNAREC
 void dyna_jump(void) {}
 void dyna_stop(struct r4300_core* r4300) { (void)r4300; }
 void dynarec_jump_to(struct r4300_core* r4300, uint32_t address)
@@ -245,6 +255,7 @@ void dynarec_jump_to(struct r4300_core* r4300, uint32_t address)
     (void)r4300;
     (void)address;
 }
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* mupen64plus core callbacks                                                */
@@ -1047,26 +1058,29 @@ int n64_glue_startup(const char* data_path)
     /* OnScreenDisplay defaults to on; without a window that only costs time
      * (and the OSD module is not compiled in).
      *
-     * R4300Emulator is pinned to 1 (Cached Interpreter) on purpose.  Setting it
-     * to 2 selects the classic x86-64 dynarec, which does start - it prints
-     * "Starting R4300 emulator: Dynamic Recompiler" - but then dies with an
-     * access violation a couple of seconds into a game (Super Mario 64, for
-     * one).  Upstream dropped that dynarec long ago; the maintained JIT is the
-     * ARM-only new_dynarec.  Neither a bigger emulation-thread stack nor
-     * -fno-strict-aliasing changed the outcome, both were tried.
+     * R4300Emulator picks the R4300 engine: 2 is the classic x86-64 dynarec,
+     * 1 the cached interpreter.  The dynarec is what makes N64 games playable
+     * on modest hardware - the interpreter burns roughly an order of magnitude
+     * more CPU per frame - so it is used whenever it is compiled in
+     * (N64_HAS_DYNAREC; default on x86-64 when nasm is available), with the
+     * interpreter kept as the fallback for builds without nasm.
      *
-     * The cached interpreter is roughly an order of magnitude slower than a
-     * working dynarec, so a real N64 speed-up means moving to a maintained
-     * core (mupen64plus-next and its ARITH/vector backends) rather than
-     * reviving this one.  Do not change this line to 2 without playing a game
-     * right through to check it survives.
-     */
+     * It used to die with an access violation a couple of seconds into a game.
+     * That was integration, not the dynarec itself: this file's interpreter-only
+     * stubs above silently overrode the real dyna_jump/dyna_stop (see the note
+     * there), and dyna_start.asm was assembled without -d WIN64 so it called
+     * through %rdi instead of %rcx.  Both are fixed; the stubs are now compiled
+     * only when the dynarec is absent. */
     {
         m64p_handle core_config = NULL;
         if (ConfigOpenSection("Core", &core_config) == M64ERR_SUCCESS && core_config)
         {
             ConfigSetParameter(core_config, "OnScreenDisplay", M64TYPE_BOOL, &(int){0});
-            int emumode = 1;   /* 1 = Cached Interpreter; see the note above */
+#ifdef N64_HAS_DYNAREC
+            int emumode = 2;   /* x86-64 dynarec */
+#else
+            int emumode = 1;   /* cached interpreter (no dynarec built) */
+#endif
             ConfigSetParameter(core_config, "R4300Emulator", M64TYPE_INT, &emumode);
         }
     }
