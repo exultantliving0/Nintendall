@@ -213,6 +213,7 @@ void LayoutControls() {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
+        DebugLog("[Dialog] WM_CREATE entered\n");
         CREATESTRUCTW* cs = (CREATESTRUCTW*)lp;
         g_dlg.hwnd = hwnd;
         
@@ -281,12 +282,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         for (HWND w : ui) if (w) SendMessageW(w, WM_SETFONT, (WPARAM)g_ui_font, TRUE);
         SendMessageW(GetDlgItem(hwnd, IDC_LBL_CONSOLE), WM_SETFONT, (WPARAM)g_big_font, TRUE);
         SendMessageW(GetDlgItem(hwnd, IDC_LBL_PORT), WM_SETFONT, (WPARAM)g_big_font, TRUE);
-        SetTimer(hwnd, IDC_TIMER, 60, nullptr);
+        UINT_PTR timer_id = SetTimer(hwnd, IDC_TIMER, 60, nullptr);
+        DebugLog("[Dialog] SetTimer returned: %p\n", (void*)timer_id);
         LayoutControls();
         return 0;
     }
     
     case WM_TIMER:
+        DebugLog("[Dialog] WM_TIMER fired, listening_type=%d capturing=%d\n", g_dlg.listening_type, InputSystem::get().capturing());
         InvalidateRect(hwnd, nullptr, FALSE);
         if (g_dlg.listening_type != 0 && !InputSystem::get().capturing()) {
             g_dlg.listening_type = 0;
@@ -451,8 +454,18 @@ bool ShowInputDialog(HWND parent, EmuConsoleType console) {
     UpdateWindow(hwnd);
     
     MSG msg;
+    DWORD last_poll = GetTickCount();
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         InputSystem::get().poll();
+
+        // Poll extra frequently while capturing (every ~16ms)
+        if (g_dlg.listening_type != 0) {
+            DWORD now = GetTickCount();
+            if (now - last_poll >= 16) {
+                last_poll = now;
+                InputSystem::get().poll();
+            }
+        }
 
         // IsDialogMessageW intercepts certain keys before WM_KEYDOWN ever
         // reaches our window procedure: Enter becomes "click the default OK

@@ -8,9 +8,22 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_joystick.h>
+
+// Simple file debug log
+void DebugLog(const char* fmt, ...) {
+    FILE* f = fopen("C:\\temp\\nintendall_input.log", "a");
+    if (f) {
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(f, fmt, args);
+        va_end(args);
+        fclose(f);
+    }
+}
 
 // =============================================================================
 // PortMapping implementation
@@ -164,18 +177,21 @@ static void UpdateGamepadList() {
     for (int i = 0; i < count && i < INPUT_MAX_PORTS; i++) {
         SDL_JoystickID instance_id = joysticks[i];
 
-        // DEBUG: Log ALL joysticks
-        SDL_Joystick* joy = SDL_OpenJoystick(instance_id);
-        if (joy) {
-            SDL_GUID guid = SDL_GetJoystickGUID(joy);
-            char guid_str[33];
-            SDL_GUIDToString(guid, guid_str, sizeof(guid_str));
-            const char* name = SDL_GetJoystickName(joy);
-            Uint16 vid = SDL_GetJoystickVendor(joy);
-            Uint16 pid = SDL_GetJoystickProduct(joy);
-            printf("[Input] Joystick: VID=%04x PID=%04x Name='%s' GUID=%s Gamepad=%d\n",
-                   vid, pid, name ? name : "unknown", guid_str, SDL_IsGamepad(instance_id));
-            SDL_CloseJoystick(joy);
+        // Check if this is a new device
+        bool is_new_gp = false;
+        bool is_new_joy = false;
+        int existing_gp_slot = -1;
+        int existing_joy_slot = -1;
+
+        for (int s = 0; s < INPUT_MAX_PORTS; s++) {
+            if (s_gamepad_instance_ids[s] == instance_id) existing_gp_slot = s;
+            if (s_joystick_instance_ids[s] == instance_id) existing_joy_slot = s;
+        }
+
+        if (SDL_IsGamepad(instance_id)) {
+            if (existing_gp_slot == -1) is_new_gp = true;
+        } else {
+            if (existing_joy_slot == -1) is_new_joy = true;
         }
 
         if (SDL_IsGamepad(instance_id)) {
@@ -195,6 +211,23 @@ static void UpdateGamepadList() {
                 }
                 s_gamepad_instance_ids[slot] = instance_id;
                 seen_gp[slot] = true;
+                if (is_new_gp) {
+                    // Log new GameController device
+                    SDL_Joystick* joy = SDL_OpenJoystick(instance_id);
+                    if (joy) {
+                        SDL_GUID guid = SDL_GetJoystickGUID(joy);
+                        char guid_str[33];
+                        SDL_GUIDToString(guid, guid_str, sizeof(guid_str));
+                        const char* name = SDL_GetJoystickName(joy);
+                        Uint16 vid = SDL_GetJoystickVendor(joy);
+                        Uint16 pid = SDL_GetJoystickProduct(joy);
+                        char dbg[256];
+                        snprintf(dbg, sizeof(dbg), "[Input] GameController connected: VID=%04x PID=%04x Name='%s' GUID=%s\n",
+                               vid, pid, name ? name : "unknown", guid_str);
+                        DebugLog("%s", dbg);
+                        SDL_CloseJoystick(joy);
+                    }
+                }
             }
         } else {
             // Raw Joystick fallback
@@ -214,8 +247,12 @@ static void UpdateGamepadList() {
                         s_joystick_num_buttons[slot] = SDL_GetNumJoystickButtons(s_joysticks[slot]);
                         s_joystick_num_axes[slot] = SDL_GetNumJoystickAxes(s_joysticks[slot]);
                         s_joystick_num_hats[slot] = SDL_GetNumJoystickHats(s_joysticks[slot]);
-                        printf("[Input] Raw joystick opened: slot=%d buttons=%d axes=%d hats=%d\n",
-                               slot, s_joystick_num_buttons[slot], s_joystick_num_axes[slot], s_joystick_num_hats[slot]);
+                        if (is_new_joy) {
+                            char dbg[128];
+                            snprintf(dbg, sizeof(dbg), "[Input] Raw joystick connected: slot=%d buttons=%d axes=%d hats=%d\n",
+                                   slot, s_joystick_num_buttons[slot], s_joystick_num_axes[slot], s_joystick_num_hats[slot]);
+                            DebugLog("%s", dbg);
+                        }
                     }
                 }
                 s_joystick_instance_ids[slot] = instance_id;
@@ -227,11 +264,17 @@ static void UpdateGamepadList() {
     // Close disconnected
     for (int i = 0; i < INPUT_MAX_PORTS; i++) {
         if (!seen_gp[i] && s_gamepads[i]) {
+            char dbg[64];
+            snprintf(dbg, sizeof(dbg), "[Input] GameController disconnected: slot=%d\n", i);
+            DebugLog("%s", dbg);
             SDL_CloseGamepad(s_gamepads[i]);
             s_gamepads[i] = nullptr;
             s_gamepad_instance_ids[i] = -1;
         }
         if (!seen_joy[i] && s_joysticks[i]) {
+            char dbg[64];
+            snprintf(dbg, sizeof(dbg), "[Input] Raw joystick disconnected: slot=%d\n", i);
+            DebugLog("%s", dbg);
             SDL_CloseJoystick(s_joysticks[i]);
             s_joysticks[i] = nullptr;
             s_joystick_instance_ids[i] = -1;
@@ -276,6 +319,10 @@ InputSystem& InputSystem::get() {
 }
 
 void InputSystem::poll() {
+    static int poll_counter = 0;
+    if (++poll_counter % 100 == 0) {
+        DebugLog("[Poll] poll() called, frame=%u\n", g_frame);
+    }
     EnsureSDL();
     UpdateGamepadList();
 
@@ -466,10 +513,22 @@ void InputSystem::cancel_capture() {
 void InputSystem::process_capture() {
     if (!capturing()) return;
 
+    // DEBUG
+    static int capture_debug_counter = 0;
+    if (++capture_debug_counter % 100 == 0) {
+        char dbg[128];
+        snprintf(dbg, sizeof(dbg), "[Capture] Active: port=%d slot=%d type=%d keyset=%d\n",
+               g_capture_port, g_capture_slot, g_capture_type, g_capture_key_set);
+        DebugLog("%s", dbg);
+    }
+
     // Keyboard
     if (g_capture_type == 0 || g_capture_type == 1) {
         for (int v = 1; v <= 0x1FF; v++) {
             if (GetAsyncKeyState(v) & 1) {
+                char dbg[64];
+                snprintf(dbg, sizeof(dbg), "[Capture] Keyboard: VK=%d\n", v);
+                DebugLog("%s", dbg);
                 PortMapping& m = g_map[g_capture_port];
                 if (g_capture_turbo) {
                     m.turbo[g_capture_slot] = (uint32_t)v;
@@ -490,6 +549,9 @@ void InputSystem::process_capture() {
             if (!s_gamepads[p]) continue;
             for (int b = 0; b < 16; b++) {
                 if (SDL_GetGamepadButton(s_gamepads[p], (SDL_GamepadButton)b)) {
+                    char dbg[64];
+                    snprintf(dbg, sizeof(dbg), "[Capture] GameController: port=%d btn=%d\n", p, b);
+                    DebugLog("%s", dbg);
                     PortMapping& m = g_map[g_capture_port];
                     uint32_t code = INPUT_XINPUT_BASE + (uint32_t)(p * 256 + b);
                     if (g_capture_turbo) {
@@ -513,8 +575,10 @@ void InputSystem::process_capture() {
             // Buttons
             for (int b = 0; b < s_joystick_num_buttons[p] && b < 32; b++) {
                 if (SDL_GetJoystickButton(s_joysticks[p], b)) {
+                    char dbg[64];
+                    snprintf(dbg, sizeof(dbg), "[Capture] Raw Joystick: port=%d btn=%d\n", p, b);
+                    DebugLog("%s", dbg);
                     PortMapping& m = g_map[g_capture_port];
-                    // Encode as port*256 + 128 + button (128-159)
                     uint32_t code = INPUT_XINPUT_BASE + (uint32_t)(p * 256 + 128 + b);
                     if (g_capture_turbo) {
                         m.turbo[g_capture_slot] = code;
@@ -530,11 +594,13 @@ void InputSystem::process_capture() {
             for (int h = 0; h < s_joystick_num_hats[p]; h++) {
                 Uint8 hat = SDL_GetJoystickHat(s_joysticks[p], h);
                 if (hat) {
-                    PortMapping& m = g_map[g_capture_port];
-                    // Encode hat directions: 192-255 (4 per hat)
                     for (int d = 0; d < 4; d++) {
                         Uint8 mask = (d == 0) ? SDL_HAT_UP : (d == 1) ? SDL_HAT_DOWN : (d == 2) ? SDL_HAT_LEFT : SDL_HAT_RIGHT;
                         if (hat & mask) {
+                            char dbg[64];
+                            snprintf(dbg, sizeof(dbg), "[Capture] Raw Joystick Hat: port=%d hat=%d dir=%d\n", p, h, d);
+                            DebugLog("%s", dbg);
+                            PortMapping& m = g_map[g_capture_port];
                             uint32_t code = INPUT_XINPUT_BASE + (uint32_t)(p * 256 + 192 + h * 4 + d);
                             if (g_capture_turbo) {
                                 m.turbo[g_capture_slot] = code;

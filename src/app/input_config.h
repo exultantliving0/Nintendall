@@ -28,6 +28,9 @@
 
 #include "emu_api.h"
 
+// Debug logging function (defined in input_config.cpp)
+void DebugLog(const char* fmt, ...);
+
 #define INPUT_MAX_PORTS   4
 #define INPUT_MAX_BUTTONS 20
 #define INPUT_KEY_SETS    4       // Mesen's "Key Set #1..#4"
