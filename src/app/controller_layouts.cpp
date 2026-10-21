@@ -171,8 +171,9 @@ const PadLayout kPadGba = {
    // IDs.  EMU_ID_Y is the Z trigger (back of controller).  EMU_ID_X is kept as
    // an alias for C-Up for backward compatibility with existing mappings.
    //
-   // The joystick is analog and can be bound as four digital directions
-   // (Joystick Up/Down/Left/Right) that set the stick values directly.
+   // The joystick is analog.  SDL exposes it as the pad's left stick; these two
+   // rows let the user see/assign the physical axes.  The N64 core also uses
+   // the D-pad as a digital fallback when the stick is centred.
    //
    // SELECT is no longer used as a shift modifier - L and R are always triggers.
    //
@@ -205,11 +206,9 @@ const PadLayout kPadGba = {
        // Z trigger (back of controller)
        BTN(EMU_ID_Y, 330, 18, kBoxSh, "Z", 330, 44, LBL_BELOW, NOTURBO),
    
-       // Joystick (digital directions)
-       BTN(EMU_ID_JOYSTICK_UP,    340, 18, kBox, "Joy Up",    340,  -8, LBL_ABOVE, NOTURBO),
-       BTN(EMU_ID_JOYSTICK_DOWN,  340, 184, kBox, "Joy Down", 340, 158, LBL_BELOW, NOTURBO),
-       BTN(EMU_ID_JOYSTICK_LEFT,  300, 140, kBox, "Joy Left", 300, 114, LBL_BELOW, NOTURBO),
-       BTN(EMU_ID_JOYSTICK_RIGHT, 380, 140, kBox, "Joy Right",380, 114, LBL_BELOW, NOTURBO),
+       // Analog stick (bound to physical axes, not button codes)
+       BTN(EMU_ID_ANALOG_LEFT_X, 220,  70, kBox, "Stick X", 220,  44, LBL_ABOVE, NOTURBO),
+       BTN(EMU_ID_ANALOG_LEFT_Y, 220, 140, kBox, "Stick Y", 220, 114, LBL_BELOW, NOTURBO),
    
        // Start
        BTN(EMU_ID_START,  272, 102, kBox, "Start",  272, 128, LBL_BELOW, NOTURBO),

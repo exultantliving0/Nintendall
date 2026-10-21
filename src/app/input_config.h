@@ -5,9 +5,12 @@
 //
 //      0                      unbound
 //      1 .. 0x1FF             keyboard virtual-key code
-//      0x1FF + n             mouse button n
-//      0xFFFF + port*0x100+n XInput controller port, button n
-//      0x11000 + port*0x100+n DirectInput controller, button n
+//      0x1FF + n              mouse button n
+//      0xFFFF + port*0x100+n  SDL controller port, where n is:
+//                               0..15   GameController buttons
+//                               64..69  GameController axes
+//                               128..159 raw joystick buttons
+//                               192..255 raw joystick hats
 //
 //  Anything at or above 0xFFFF counts as "a gamepad", which is how the mapping
 //  dialog decides what to label things.
@@ -16,9 +19,6 @@
 //  Mesen's "Key Set" tabs, and it is what lets one button respond to, say, both
 //  Space and a gamepad's X at the same time.  Every button may additionally have
 //  a turbo binding that fires it automatically on a timer.
-//
-//  XInput is loaded dynamically so the executable still starts on a machine
-//  whose xinput DLL is missing; gamepads simply report as absent.
 // =============================================================================
 
 #ifndef NINTENDALL_INPUT_CONFIG_H
@@ -45,6 +45,13 @@ void DebugLog(const char* fmt, ...);
 #define INPUT_MOUSE_BASE       0x1FFu
 #define INPUT_XINPUT_BASE      0xFFFFu
 #define INPUT_DINPUT_BASE      0x11000u
+
+// Gamepad axis bindings live in the otherwise-unused 64..127 part of the
+// per-port byte.  They let triggers (and sticks) be bound like buttons, which
+// matters for controllers such as the NSO N64 pad: SDL reports its Z and
+// C-Down as the left/right trigger axes.
+#define INPUT_AXIS_BASE        64u
+#define INPUT_AXIS_COUNT       6
 
 // One console's controller.  Slots are addressed by EmuInputId, so a given
 // button has exactly one row however many keys are bound to it.
@@ -89,11 +96,16 @@ public:
     // 1 when the given emulated button is currently held (or firing on turbo).
     int is_pressed(unsigned port, EmuInputId id) const;
 
+    // Signed value (-128..127) for analog axes; digital inputs return 0/1.
+    // Cores must use this rather than is_pressed() for EMU_ID_ANALOG_*.
+    int analog_value(unsigned port, EmuInputId id) const;
+
     // True while turbo is firing this frame, so the dialog can flash the button.
     int turbo_firing(unsigned port, EmuInputId id) const;
 
-    // Human-readable name for a physical input code, for the dialog.
-    static const char* describe(uint32_t code, char* buf, size_t bufSize);
+    // Human-readable name for a physical input code, for the dialog.  The port
+    // selects the controller-specific names (e.g. C-Up on an NSO N64 pad).
+    static const char* describe(unsigned port, uint32_t code, char* buf, size_t bufSize);
 
     // 1 when any XInput pad is connected.
     int connected_pads() const;
@@ -157,7 +169,7 @@ private:
     int         g_capture_port = -1;
     int         g_capture_slot = -1;
     int         g_capture_key_set = 0;
-    int         g_capture_type  = 0;  // 0 any, 1 keyboard, 2 gamepad
+    int         g_capture_type  = 0;  // 0 any, 1 keyboard, 2 gamepad, 3 axis only
     int         g_capture_turbo  = 0;
     int         g_turbo_speed   = 6;
     EmuConsoleType g_console     = EMU_CONSOLE_NES;
@@ -165,6 +177,10 @@ private:
 
     // True when the slot's turbo should fire on the current frame.
     int turbo_edge(unsigned port, int slot) const;
+
+    // Re-point the left analog axes at whatever physical axes the user bound
+    // to EMU_ID_ANALOG_LEFT_X/Y (defaults to axes 0/1).
+    void apply_analog_bindings(unsigned port);
 };
 
 #endif  // NINTENDALL_INPUT_CONFIG_H

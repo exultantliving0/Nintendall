@@ -105,17 +105,7 @@ static const struct { SDL_GamepadButton sdl; EmuInputId emu; const char* name; }
     { SDL_GAMEPAD_BUTTON_GUIDE, EMU_ID_HOME,       "Guide" },
 };
 
-static const struct { SDL_GamepadAxis sdl; EmuInputId emu; } sdl_axis_map[] = {
-    { SDL_GAMEPAD_AXIS_LEFTX,  EMU_ID_ANALOG_LEFT_X },
-    { SDL_GAMEPAD_AXIS_LEFTY,  EMU_ID_ANALOG_LEFT_Y },
-    { SDL_GAMEPAD_AXIS_RIGHTX, EMU_ID_ANALOG_RIGHT_X },
-    { SDL_GAMEPAD_AXIS_RIGHTY, EMU_ID_ANALOG_RIGHT_Y },
-    { SDL_GAMEPAD_AXIS_LEFT_TRIGGER,  EMU_ID_TRIGGER_LEFT },
-    { SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, EMU_ID_TRIGGER_RIGHT },
-};
-
 static const int SDL_BUTTON_COUNT = sizeof(sdl_button_map) / sizeof(sdl_button_map[0]);
-static const int SDL_AXIS_COUNT = sizeof(sdl_axis_map) / sizeof(sdl_axis_map[0]);
 
 // =============================================================================
 // NSO (Nintendo Switch Online) controller mappings - placeholder until we get real GUIDs
@@ -153,8 +143,14 @@ static int s_joystick_num_buttons[INPUT_MAX_PORTS] = { 0 };
 static int s_joystick_num_axes[INPUT_MAX_PORTS] = { 0 };
 static int s_joystick_num_hats[INPUT_MAX_PORTS] = { 0 };
 
-static int s_pad_pressed[INPUT_MAX_PORTS] = { 0 };
-static int s_pad_prev[INPUT_MAX_PORTS] = { 0 };
+// Controller-specific naming/defaults.  SDL already knows how to talk to the
+// NSO N64 pad; this only lets us show its real button names and give it a
+// sensible default mapping.
+enum ControllerProfile {
+    PROFILE_GENERIC = 0,
+    PROFILE_NSO_N64,
+};
+static ControllerProfile s_profile[INPUT_MAX_PORTS] = { PROFILE_GENERIC, PROFILE_GENERIC, PROFILE_GENERIC, PROFILE_GENERIC };
 
 // Capture edge detection: the first poll after begin_capture() records the
 // current state so a button that was already held (or a bad mapping that
@@ -163,12 +159,54 @@ static bool s_cap_has_snapshot = false;
 static bool s_cap_prev_gp[INPUT_MAX_PORTS][16];
 static Uint8 s_cap_prev_btn[INPUT_MAX_PORTS][32];
 static Uint8 s_cap_prev_hat[INPUT_MAX_PORTS][4];
+static Sint16 s_cap_prev_axis[INPUT_MAX_PORTS][INPUT_AXIS_COUNT];
+static Sint16 s_cap_prev_raw_axis[INPUT_MAX_PORTS][INPUT_AXIS_COUNT];
 
 // The joystick behind a port, whether SDL classified it as a gamepad or as a
 // plain joystick.  Raw-button bindings need this for both kinds of device.
 static SDL_Joystick* PortJoystick(int port) {
     if (s_gamepads[port]) return SDL_GetGamepadJoystick(s_gamepads[port]);
     return s_joysticks[port];
+}
+
+// SDL's HIDAPI driver already identifies the NSO N64 pad, both through its
+// vendor/product and through the controller-type byte at the end of the GUID.
+static ControllerProfile DetectControllerProfile(SDL_Joystick* joy) {
+    if (!joy) return PROFILE_GENERIC;
+    if (SDL_GetJoystickVendor(joy) == 0x057e && SDL_GetJoystickProduct(joy) == 0x2019)
+        return PROFILE_NSO_N64;
+    SDL_GUID guid = SDL_GetJoystickGUID(joy);
+    if (guid.data[15] == 0x0c)  // k_eSwitchDeviceInfoControllerType_N64
+        return PROFILE_NSO_N64;
+    return PROFILE_GENERIC;
+}
+
+// Convert an SDL axis to the signed 8-bit range the cores use.  Trigger axes
+// rest at 0 and rise to 127; stick axes are centred on 0.
+static int8_t NormalizeAxisValue(int axis, Sint16 val) {
+    if (axis >= 4) {
+        if (val < 0) val = 0;  // some HID devices report triggers as -32768..32767
+        int n = (int)val * 128 / 32768;
+        if (n < 0) n = 0;
+        if (n > 127) n = 127;
+        return (int8_t)n;
+    }
+
+    int n = (int)val * 128 / 32768;
+    if (n < -128) n = -128;
+    if (n > 127) n = 127;
+    const int deadzone = 10;  // ~8% - enough to hide worn-stick drift
+    if (n > -deadzone && n < deadzone) n = 0;
+    return (int8_t)n;
+}
+
+static int8_t ReadAxisNormalized(int port, int axis) {
+    if (axis < 0 || axis >= INPUT_AXIS_COUNT) return 0;
+    if (s_gamepads[port])
+        return NormalizeAxisValue(axis, SDL_GetGamepadAxis(s_gamepads[port], (SDL_GamepadAxis)axis));
+    if (s_joysticks[port] && axis < s_joystick_num_axes[port])
+        return NormalizeAxisValue(axis, SDL_GetJoystickAxis(s_joysticks[port], axis));
+    return 0;
 }
 
 // =============================================================================
@@ -229,6 +267,8 @@ static void UpdateGamepadList() {
                 }
                 if (!s_gamepads[slot]) {
                     s_gamepads[slot] = SDL_OpenGamepad(instance_id);
+                    if (s_gamepads[slot])
+                        s_profile[slot] = DetectControllerProfile(SDL_GetGamepadJoystick(s_gamepads[slot]));
                 }
                 s_gamepad_instance_ids[slot] = instance_id;
                 seen_gp[slot] = true;
@@ -265,6 +305,7 @@ static void UpdateGamepadList() {
                 if (!s_joysticks[slot]) {
                     s_joysticks[slot] = SDL_OpenJoystick(instance_id);
                     if (s_joysticks[slot]) {
+                        s_profile[slot] = DetectControllerProfile(s_joysticks[slot]);
                         s_joystick_num_buttons[slot] = SDL_GetNumJoystickButtons(s_joysticks[slot]);
                         s_joystick_num_axes[slot] = SDL_GetNumJoystickAxes(s_joysticks[slot]);
                         s_joystick_num_hats[slot] = SDL_GetNumJoystickHats(s_joysticks[slot]);
@@ -291,6 +332,7 @@ static void UpdateGamepadList() {
             SDL_CloseGamepad(s_gamepads[i]);
             s_gamepads[i] = nullptr;
             s_gamepad_instance_ids[i] = -1;
+            s_profile[i] = PROFILE_GENERIC;
         }
         if (!seen_joy[i] && s_joysticks[i]) {
             char dbg[64];
@@ -299,6 +341,7 @@ static void UpdateGamepadList() {
             SDL_CloseJoystick(s_joysticks[i]);
             s_joysticks[i] = nullptr;
             s_joystick_instance_ids[i] = -1;
+            s_profile[i] = PROFILE_GENERIC;
             s_joystick_num_buttons[i] = 0;
             s_joystick_num_axes[i] = 0;
             s_joystick_num_hats[i] = 0;
@@ -311,12 +354,16 @@ static void SnapshotCaptureState() {
     memset(s_cap_prev_gp, 0, sizeof(s_cap_prev_gp));
     memset(s_cap_prev_btn, 0, sizeof(s_cap_prev_btn));
     memset(s_cap_prev_hat, 0, sizeof(s_cap_prev_hat));
+    memset(s_cap_prev_axis, 0, sizeof(s_cap_prev_axis));
+    memset(s_cap_prev_raw_axis, 0, sizeof(s_cap_prev_raw_axis));
 
     for (int p = 0; p < INPUT_MAX_PORTS; p++) {
         SDL_Gamepad* gp = s_gamepads[p];
         if (gp) {
             for (int b = 0; b < 16; b++)
                 s_cap_prev_gp[p][b] = SDL_GetGamepadButton(gp, (SDL_GamepadButton)b) ? true : false;
+            for (int a = 0; a < INPUT_AXIS_COUNT; a++)
+                s_cap_prev_axis[p][a] = NormalizeAxisValue(a, SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)a));
         }
         SDL_Joystick* joy = PortJoystick(p);
         if (joy) {
@@ -327,6 +374,10 @@ static void SnapshotCaptureState() {
             int nhats = SDL_GetNumJoystickHats(joy);
             for (int h = 0; h < nhats && h < 4; h++)
                 s_cap_prev_hat[p][h] = SDL_GetJoystickHat(joy, h);
+
+            int naxes = SDL_GetNumJoystickAxes(joy);
+            for (int a = 0; a < naxes && a < INPUT_AXIS_COUNT; a++)
+                s_cap_prev_raw_axis[p][a] = NormalizeAxisValue(a, SDL_GetJoystickAxis(joy, a));
         }
     }
 }
@@ -360,12 +411,94 @@ static uint32_t PollRawJoystickCapture(int p, SDL_Joystick* joy) {
     return 0;
 }
 
-// Helper: button name for GameController
-static const char* sdl_button_name(int sdl_btn) {
+// Return the code of a newly moved gamepad axis, or 0.
+static uint32_t PollGamepadAxisCapture(int p, SDL_Gamepad* gp) {
+    const int threshold = 60;  // ~47% of full travel
+    for (int a = 0; a < INPUT_AXIS_COUNT; a++) {
+        Sint16 cur = NormalizeAxisValue(a, SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)a));
+        Sint16 prev = s_cap_prev_axis[p][a];
+        bool now = abs((int)cur) > threshold;
+        bool was = abs((int)prev) > threshold;
+        s_cap_prev_axis[p][a] = cur;
+        if (now && !was)
+            return INPUT_XINPUT_BASE + (uint32_t)(p * 256 + (int)INPUT_AXIS_BASE + a);
+    }
+    return 0;
+}
+
+// Return the code of a newly moved raw-joystick axis, or 0.
+static uint32_t PollRawAxisCapture(int p, SDL_Joystick* joy) {
+    const int threshold = 60;
+    int naxes = SDL_GetNumJoystickAxes(joy);
+    for (int a = 0; a < naxes && a < INPUT_AXIS_COUNT; a++) {
+        Sint16 cur = NormalizeAxisValue(a, SDL_GetJoystickAxis(joy, a));
+        Sint16 prev = s_cap_prev_raw_axis[p][a];
+        bool now = abs((int)cur) > threshold;
+        bool was = abs((int)prev) > threshold;
+        s_cap_prev_raw_axis[p][a] = cur;
+        if (now && !was)
+            return INPUT_XINPUT_BASE + (uint32_t)(p * 256 + (int)INPUT_AXIS_BASE + a);
+    }
+    return 0;
+}
+
+// Generic SDL gamepad button name.
+static const char* generic_button_name(int sdl_btn) {
     for (int i = 0; i < SDL_BUTTON_COUNT; i++) {
         if (sdl_button_map[i].sdl == sdl_btn) return sdl_button_map[i].name;
     }
+    if (sdl_btn == SDL_GAMEPAD_BUTTON_MISC1) return "Capture";
     return "Btn";
+}
+
+// The NSO N64 pad is exposed by SDL as a standard gamepad, but its physical
+// buttons land in non-obvious standard slots.  These are the slots the Linux
+// hid-nintendo driver documents for the same hardware:
+//   0 A, 1 B, 2 C-Left, 3 C-Up, 4 C-Right, 9 L, 10 R, 6 Start,
+//   left trigger = Z, right trigger = C-Down.
+static const char* n64_button_name(int sdl_btn) {
+    switch (sdl_btn) {
+        case SDL_GAMEPAD_BUTTON_SOUTH:          return "A";
+        case SDL_GAMEPAD_BUTTON_EAST:           return "B";
+        case SDL_GAMEPAD_BUTTON_WEST:           return "C-Left";
+        case SDL_GAMEPAD_BUTTON_NORTH:          return "C-Up";
+        case SDL_GAMEPAD_BUTTON_BACK:           return "C-Right";
+        case SDL_GAMEPAD_BUTTON_GUIDE:          return "Home";
+        case SDL_GAMEPAD_BUTTON_START:          return "Start";
+        case SDL_GAMEPAD_BUTTON_LEFT_STICK:     return "ZR";
+        case SDL_GAMEPAD_BUTTON_RIGHT_STICK:    return "R3";
+        case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:  return "L";
+        case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return "R";
+        case SDL_GAMEPAD_BUTTON_DPAD_UP:        return "D-Up";
+        case SDL_GAMEPAD_BUTTON_DPAD_DOWN:      return "D-Down";
+        case SDL_GAMEPAD_BUTTON_DPAD_LEFT:      return "D-Left";
+        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:     return "D-Right";
+        case SDL_GAMEPAD_BUTTON_MISC1:          return "Capture";
+        default:                                return "Btn";
+    }
+}
+
+static const char* axis_name(int axis, ControllerProfile profile) {
+    if (profile == PROFILE_NSO_N64) {
+        switch (axis) {
+            case 0: return "Stick X";
+            case 1: return "Stick Y";
+            case 2: return "Right X";
+            case 3: return "Right Y";
+            case 4: return "Z";
+            case 5: return "C-Down";
+        }
+    } else {
+        switch (axis) {
+            case 0: return "Left X";
+            case 1: return "Left Y";
+            case 2: return "Right X";
+            case 3: return "Right Y";
+            case 4: return "LT";
+            case 5: return "RT";
+        }
+    }
+    return "Axis";
 }
 
 // =============================================================================
@@ -385,6 +518,7 @@ InputSystem::InputSystem() {
         s_joystick_num_buttons[i] = 0;
         s_joystick_num_axes[i] = 0;
         s_joystick_num_hats[i] = 0;
+        s_profile[i] = PROFILE_GENERIC;
     }
 }
 
@@ -419,33 +553,42 @@ void InputSystem::poll() {
                 }
             }
             g_pad_pressed[port] = bits;
-
-            for (int i = 0; i < SDL_AXIS_COUNT; i++) {
-                Sint16 val = SDL_GetGamepadAxis(gp, sdl_axis_map[i].sdl);
-                int16_t norm = (int16_t)(val * 128 / 32768);
-                const int deadzone = 32;
-                if (abs(norm) < deadzone) norm = 0;
-                this->g_analog[port][i] = (int8_t)norm;
-            }
         }
 
-        // Raw Joystick path
-        SDL_Joystick* joy = s_joysticks[port];
-        if (joy) {
-            // Axes
-            int naxis = s_joystick_num_axes[port];
-            for (int a = 0; a < naxis && a < 6; a++) {
-                Sint16 val = SDL_GetJoystickAxis(joy, a);
-                int16_t norm = (int16_t)(val * 128 / 32768);
-                const int deadzone = 32;
-                if (abs(norm) < deadzone) norm = 0;
-                // Raw sticks use the standard left/right analog slots.
-                this->g_analog[port][a] = (int8_t)norm;
-            }
-        }
+        // Read all six standard axes, whether this is a GameController or a
+        // raw joystick.  Triggers are included: on the NSO N64 pad SDL exposes
+        // Z and C-Down as the trigger axes, so they must still reach the core.
+        for (int a = 0; a < INPUT_AXIS_COUNT; a++)
+            this->g_analog[port][a] = ReadAxisNormalized(port, a);
+
+        // The mapping may re-point the N64 stick at different physical axes.
+        apply_analog_bindings((unsigned)port);
     }
 
     process_capture();
+}
+
+// Find the physical axis a slot is bound to, or -1 if it is not an axis.
+static int FindBoundAxis(const PortMapping& m, EmuInputId id) {
+    int slot = m.find_by_id(id);
+    if (slot < 0) return -1;
+    for (int k = 0; k < INPUT_KEY_SETS; k++) {
+        uint32_t code = m.codes[slot][k];
+        if (!INPUT_IS_GAMEPAD(code)) continue;
+        uint32_t v = code - INPUT_XINPUT_BASE;
+        int b = (int)(v % 256);
+        if (b >= (int)INPUT_AXIS_BASE && b < (int)(INPUT_AXIS_BASE + INPUT_AXIS_COUNT))
+            return b - (int)INPUT_AXIS_BASE;
+    }
+    return -1;
+}
+
+void InputSystem::apply_analog_bindings(unsigned port) {
+    if (port >= INPUT_MAX_PORTS) return;
+    int ax = FindBoundAxis(g_map[port], EMU_ID_ANALOG_LEFT_X);
+    int ay = FindBoundAxis(g_map[port], EMU_ID_ANALOG_LEFT_Y);
+    if (ax >= 0) g_analog[port][0] = ReadAxisNormalized((int)port, ax);
+    if (ay >= 0) g_analog[port][1] = ReadAxisNormalized((int)port, ay);
 }
 
 // =============================================================================
@@ -458,7 +601,7 @@ int InputSystem::is_pressed(unsigned port, EmuInputId id) const {
     // Check analog axes
     if (id >= EMU_ID_ANALOG_LEFT_X && id <= EMU_ID_TRIGGER_RIGHT) {
         int axis = id - EMU_ID_ANALOG_LEFT_X;
-        if (axis >= 0 && axis < 6) return this->g_analog[port][axis] != 0 ? 1 : 0;
+        if (axis >= 0 && axis < INPUT_AXIS_COUNT) return this->g_analog[port][axis] != 0 ? 1 : 0;
     }
 
     // Check raw joystick buttons/axes/hats
@@ -499,6 +642,13 @@ int InputSystem::is_pressed(unsigned port, EmuInputId id) const {
                 SDL_Gamepad* gp = s_gamepads[p];
                 if (gp && SDL_GetGamepadButton(gp, (SDL_GamepadButton)b)) return 1;
             }
+            // Trigger/stick axes bound as buttons.  The NSO N64's Z and
+            // C-Down arrive here as the two trigger axes.
+            if (p >= 0 && p < INPUT_MAX_PORTS &&
+                b >= (int)INPUT_AXIS_BASE && b < (int)(INPUT_AXIS_BASE + INPUT_AXIS_COUNT)) {
+                int axis = b - (int)INPUT_AXIS_BASE;
+                if (abs((int)g_analog[p][axis]) > 20) return 1;
+            }
             // Also support raw joystick codes (port*256 + 128 + button/hat)
             if (b >= 128 && b < 192) {
                 int raw_b = b - 128;
@@ -521,6 +671,15 @@ int InputSystem::is_pressed(unsigned port, EmuInputId id) const {
         }
     }
     return turbo_edge(port, slot);
+}
+
+int InputSystem::analog_value(unsigned port, EmuInputId id) const {
+    if (port >= INPUT_MAX_PORTS) return 0;
+    if (id >= EMU_ID_ANALOG_LEFT_X && id <= EMU_ID_TRIGGER_RIGHT) {
+        int axis = id - EMU_ID_ANALOG_LEFT_X;
+        if (axis >= 0 && axis < INPUT_AXIS_COUNT) return g_analog[port][axis];
+    }
+    return is_pressed(port, id) ? 1 : 0;
 }
 
 int InputSystem::turbo_firing(unsigned port, EmuInputId id) const {
@@ -590,7 +749,7 @@ void InputSystem::process_capture() {
 
     // Controllers: SDL gamepads first, then raw joystick data for buttons the
     // SDL mapping doesn't cover (and for plain joysticks).
-    if (g_capture_type == 0 || g_capture_type == 2) {
+    if (g_capture_type == 0 || g_capture_type == 2 || g_capture_type == 3) {
         EnsureSDL();
 
         // Ignore whatever is already held when capture begins.
@@ -604,7 +763,7 @@ void InputSystem::process_capture() {
             uint32_t code = 0;
 
             SDL_Gamepad* gp = s_gamepads[p];
-            if (gp) {
+            if (gp && g_capture_type != 3) {
                 for (int b = 0; b < 16; b++) {
                     bool pressed = SDL_GetGamepadButton(gp, (SDL_GamepadButton)b);
                     if (pressed && !s_cap_prev_gp[p][b]) {
@@ -615,9 +774,14 @@ void InputSystem::process_capture() {
                 }
             }
 
+            if (!code && gp) code = PollGamepadAxisCapture(p, gp);
+
             if (!code) {
                 SDL_Joystick* joy = PortJoystick(p);
-                if (joy) code = PollRawJoystickCapture(p, joy);
+                if (joy) {
+                    if (!gp) code = PollRawAxisCapture(p, joy);
+                    if (!code && g_capture_type != 3) code = PollRawJoystickCapture(p, joy);
+                }
             }
 
             if (code) {
@@ -658,6 +822,9 @@ int InputSystem::turbo_edge(unsigned port, int slot) const {
             if (b >= 0 && b < 16) {
                 SDL_Gamepad* gp = s_gamepads[p];
                 if (gp && SDL_GetGamepadButton(gp, (SDL_GamepadButton)b)) held = 1;
+            } else if (b >= (int)INPUT_AXIS_BASE && b < (int)(INPUT_AXIS_BASE + INPUT_AXIS_COUNT)) {
+                int axis = b - (int)INPUT_AXIS_BASE;
+                if (abs((int)g_analog[p][axis]) > 20) held = 1;
             } else if (b >= 128 && b < 160) {
                 int raw_b = b - 128;
                 SDL_Joystick* joy = PortJoystick(p);
@@ -688,7 +855,8 @@ int InputSystem::turbo_edge(unsigned port, int slot) const {
 // Description / Naming
 // =============================================================================
 
-const char* InputSystem::describe(uint32_t code, char* buf, size_t bufSize) {
+const char* InputSystem::describe(unsigned port, uint32_t code, char* buf, size_t bufSize) {
+    (void)port;
     if (bufSize == 0) return buf;
     if (code == INPUT_NONE) { snprintf(buf, bufSize, "--"); return buf; }
 
@@ -710,10 +878,17 @@ const char* InputSystem::describe(uint32_t code, char* buf, size_t bufSize) {
     if (INPUT_IS_GAMEPAD(code)) {
         uint32_t v = code - INPUT_XINPUT_BASE;
         int p = (int)(v / 256), b = (int)(v % 256);
-        
+        ControllerProfile prof = (p >= 0 && p < INPUT_MAX_PORTS) ? s_profile[p] : PROFILE_GENERIC;
+
         if (b >= 0 && b < 16) {
-            const char* name = sdl_button_name(b);
+            const char* name = (prof == PROFILE_NSO_N64) ? n64_button_name(b)
+                                                         : generic_button_name(b);
             snprintf(buf, bufSize, "Joy%d %s", p + 1, name);
+            return buf;
+        } else if (b >= (int)INPUT_AXIS_BASE && b < (int)(INPUT_AXIS_BASE + INPUT_AXIS_COUNT)) {
+            // Trigger/stick axis bound as a button
+            snprintf(buf, bufSize, "Joy%d %s", p + 1,
+                     axis_name(b - (int)INPUT_AXIS_BASE, prof));
             return buf;
         } else if (b >= 128 && b < 160) {
             // Raw joystick button
@@ -818,6 +993,83 @@ bool InputSystem::load(const char* path) {
 // =============================================================================
 
 void InputSystem::apply_defaults(EmuConsoleType console, unsigned port) {
+    if (port >= INPUT_MAX_PORTS) return;
+    EnsureSDL();
+    SDL_UpdateJoysticks();
+    UpdateGamepadList();
+
+    PortMapping& m = g_map[port];
+    m.clear();
+
+    auto btn_code = [&](SDL_GamepadButton b) -> uint32_t {
+        return INPUT_XINPUT_BASE + (uint32_t)(port * 256 + (int)b);
+    };
+    auto axis_code = [&](int a) -> uint32_t {
+        return INPUT_XINPUT_BASE + (uint32_t)(port * 256 + (int)INPUT_AXIS_BASE + a);
+    };
+
+    if (console == EMU_CONSOLE_NINTENDO_64) {
+        // Keyboard defaults chosen around the N64's own button names.
+        struct { EmuInputId id; uint32_t code; } kb[] = {
+            { EMU_ID_UP,      VK_UP },   { EMU_ID_DOWN,  VK_DOWN },
+            { EMU_ID_LEFT,    VK_LEFT }, { EMU_ID_RIGHT, VK_RIGHT },
+            { EMU_ID_A,       'X' },     { EMU_ID_B,     'Z' },
+            { EMU_ID_C_UP,    'S' },     { EMU_ID_C_DOWN,'C' },
+            { EMU_ID_C_LEFT,  'A' },     { EMU_ID_C_RIGHT,'D' },
+            { EMU_ID_L,       'Q' },     { EMU_ID_R,     'W' },
+            { EMU_ID_Y,       'E' },     // Z trigger
+            { EMU_ID_START,   VK_RETURN },
+        };
+        for (auto& d : kb) m.set_by_id(d.id, d.code, 0);
+
+        if (s_profile[port] == PROFILE_NSO_N64) {
+            // SDL's native N64 layout.  Its C-Up/C-Left/C-Right are ordinary
+            // buttons; Z and C-Down are the left/right trigger axes; the stick
+            // is the left stick.  This mirrors hid-nintendo's mapping.
+            struct { EmuInputId id; uint32_t code; } pad[] = {
+                { EMU_ID_A,             btn_code(SDL_GAMEPAD_BUTTON_SOUTH) },
+                { EMU_ID_B,             btn_code(SDL_GAMEPAD_BUTTON_EAST) },
+                { EMU_ID_C_UP,          btn_code(SDL_GAMEPAD_BUTTON_NORTH) },
+                { EMU_ID_C_LEFT,        btn_code(SDL_GAMEPAD_BUTTON_WEST) },
+                { EMU_ID_C_RIGHT,       btn_code(SDL_GAMEPAD_BUTTON_BACK) },
+                { EMU_ID_C_DOWN,        axis_code(5) },  // right trigger
+                { EMU_ID_Y,             axis_code(4) },  // Z = left trigger
+                { EMU_ID_L,             btn_code(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) },
+                { EMU_ID_R,             btn_code(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) },
+                { EMU_ID_START,         btn_code(SDL_GAMEPAD_BUTTON_START) },
+                { EMU_ID_UP,            btn_code(SDL_GAMEPAD_BUTTON_DPAD_UP) },
+                { EMU_ID_DOWN,          btn_code(SDL_GAMEPAD_BUTTON_DPAD_DOWN) },
+                { EMU_ID_LEFT,          btn_code(SDL_GAMEPAD_BUTTON_DPAD_LEFT) },
+                { EMU_ID_RIGHT,         btn_code(SDL_GAMEPAD_BUTTON_DPAD_RIGHT) },
+                { EMU_ID_ANALOG_LEFT_X, axis_code(0) },
+                { EMU_ID_ANALOG_LEFT_Y, axis_code(1) },
+            };
+            for (auto& d : pad) m.set_by_id(d.id, d.code, 1);
+        } else {
+            // Generic pad: keep the familiar face-button layout.  The dialog
+            // can bind the remaining C buttons and Z to whatever is free.
+            struct { EmuInputId id; SDL_GamepadButton b; } pad[] = {
+                { EMU_ID_A,      SDL_GAMEPAD_BUTTON_SOUTH },
+                { EMU_ID_B,      SDL_GAMEPAD_BUTTON_EAST },
+                { EMU_ID_C_UP,   SDL_GAMEPAD_BUTTON_NORTH },
+                { EMU_ID_Y,      SDL_GAMEPAD_BUTTON_WEST },   // Z
+                { EMU_ID_L,      SDL_GAMEPAD_BUTTON_LEFT_SHOULDER },
+                { EMU_ID_R,      SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER },
+                { EMU_ID_START,  SDL_GAMEPAD_BUTTON_START },
+                { EMU_ID_UP,     SDL_GAMEPAD_BUTTON_DPAD_UP },
+                { EMU_ID_DOWN,   SDL_GAMEPAD_BUTTON_DPAD_DOWN },
+                { EMU_ID_LEFT,   SDL_GAMEPAD_BUTTON_DPAD_LEFT },
+                { EMU_ID_RIGHT,  SDL_GAMEPAD_BUTTON_DPAD_RIGHT },
+            };
+            for (auto& d : pad) {
+                m.set_by_id(d.id, btn_code(d.b), 1);
+            }
+            m.set_by_id(EMU_ID_ANALOG_LEFT_X, axis_code(0), 1);
+            m.set_by_id(EMU_ID_ANALOG_LEFT_Y, axis_code(1), 1);
+        }
+        return;
+    }
+
     struct { EmuInputId id; uint32_t code; } defaults[] = {
         { EMU_ID_UP,    VK_UP }, { EMU_ID_DOWN,  VK_DOWN },
         { EMU_ID_LEFT,  VK_LEFT }, { EMU_ID_RIGHT, VK_RIGHT },
@@ -826,39 +1078,26 @@ void InputSystem::apply_defaults(EmuConsoleType console, unsigned port) {
         { EMU_ID_L,     'Q' }, { EMU_ID_R, 'W' },
         { EMU_ID_START, VK_RETURN }, { EMU_ID_SELECT, VK_SHIFT },
     };
-
-    PortMapping& m = g_map[port & 3];
-    m.clear();
     for (auto& d : defaults) m.set_by_id(d.id, d.code, 0);
 
     // GameController defaults for key set 1
-    EnsureSDL();
-    int count = 0;
-    const SDL_JoystickID* joysticks = SDL_GetJoysticks(&count);
-    if (joysticks && count > 0) {
-        for (int i = 0; i < count && i < INPUT_MAX_PORTS; i++) {
-            if (SDL_IsGamepad(joysticks[i])) {
-                static const struct { EmuInputId id; SDL_GamepadButton sdl_btn; } pad_map[] = {
-                    { EMU_ID_A,      SDL_GAMEPAD_BUTTON_SOUTH },
-                    { EMU_ID_B,      SDL_GAMEPAD_BUTTON_EAST },
-                    { EMU_ID_X,      SDL_GAMEPAD_BUTTON_NORTH },
-                    { EMU_ID_Y,      SDL_GAMEPAD_BUTTON_WEST },
-                    { EMU_ID_L,      SDL_GAMEPAD_BUTTON_LEFT_SHOULDER },
-                    { EMU_ID_R,      SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER },
-                    { EMU_ID_START,  SDL_GAMEPAD_BUTTON_START },
-                    { EMU_ID_SELECT, SDL_GAMEPAD_BUTTON_BACK },
-                    { EMU_ID_UP,     SDL_GAMEPAD_BUTTON_DPAD_UP },
-                    { EMU_ID_DOWN,   SDL_GAMEPAD_BUTTON_DPAD_DOWN },
-                    { EMU_ID_LEFT,   SDL_GAMEPAD_BUTTON_DPAD_LEFT },
-                    { EMU_ID_RIGHT,  SDL_GAMEPAD_BUTTON_DPAD_RIGHT },
-                };
-                for (auto& entry : pad_map) {
-                    uint32_t code = INPUT_XINPUT_BASE + (uint32_t)((port & 3) * 256 + entry.sdl_btn);
-                    m.set_by_id(entry.id, code, 1);
-                }
-                break;
-            }
-        }
+    if (s_gamepads[port]) {
+        static const struct { EmuInputId id; SDL_GamepadButton sdl_btn; } pad_map[] = {
+            { EMU_ID_A,      SDL_GAMEPAD_BUTTON_SOUTH },
+            { EMU_ID_B,      SDL_GAMEPAD_BUTTON_EAST },
+            { EMU_ID_X,      SDL_GAMEPAD_BUTTON_NORTH },
+            { EMU_ID_Y,      SDL_GAMEPAD_BUTTON_WEST },
+            { EMU_ID_L,      SDL_GAMEPAD_BUTTON_LEFT_SHOULDER },
+            { EMU_ID_R,      SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER },
+            { EMU_ID_START,  SDL_GAMEPAD_BUTTON_START },
+            { EMU_ID_SELECT, SDL_GAMEPAD_BUTTON_BACK },
+            { EMU_ID_UP,     SDL_GAMEPAD_BUTTON_DPAD_UP },
+            { EMU_ID_DOWN,   SDL_GAMEPAD_BUTTON_DPAD_DOWN },
+            { EMU_ID_LEFT,   SDL_GAMEPAD_BUTTON_DPAD_LEFT },
+            { EMU_ID_RIGHT,  SDL_GAMEPAD_BUTTON_DPAD_RIGHT },
+        };
+        for (auto& entry : pad_map)
+            m.set_by_id(entry.id, btn_code(entry.sdl_btn), 1);
     }
 }
 

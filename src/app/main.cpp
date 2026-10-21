@@ -306,6 +306,10 @@ static int InputStateCallback(void* userdata, unsigned port, unsigned device,
         return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) ? 1 : 0;
     }
     if (port > INPUT_MAX_PORTS - 1) return 0;
+    // Analog axes carry signed -128..127 values; is_pressed() would quantise
+    // them to 0/1 and the N64 stick would barely move.
+    if (id >= EMU_ID_ANALOG_LEFT_X && id <= EMU_ID_TRIGGER_RIGHT)
+        return InputSystem::get().analog_value(port, (EmuInputId)id);
     return InputSystem::get().is_pressed(port, (EmuInputId)id);
 }
 

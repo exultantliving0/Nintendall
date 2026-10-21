@@ -199,9 +199,14 @@ static int n64_run_frame(EmuCoreHandle core) {
         if (down(EMU_ID_RIGHT)) { buttons |= 0x0001u; stick_x =  80; }
 
         // Analog joystick (overrides D-pad stick values when active).
-        // Reads the left thumbstick as analog (-128..127).
+        // Reads the left thumbstick as analog (-128..127).  SDL's Y axis is
+        // negative when the stick is pushed up; the N64 expects positive up,
+        // so invert it here.
         int8_t a_stick_x = (int8_t)c->input_state_cb(c->userdata, 0, EMU_DEVICE_JOYPAD, 0, EMU_ID_ANALOG_LEFT_X);
-        int8_t a_stick_y = (int8_t)c->input_state_cb(c->userdata, 0, EMU_DEVICE_JOYPAD, 0, EMU_ID_ANALOG_LEFT_Y);
+        int sy = -(int)c->input_state_cb(c->userdata, 0, EMU_DEVICE_JOYPAD, 0, EMU_ID_ANALOG_LEFT_Y);
+        if (sy > 127) sy = 127;
+        if (sy < -128) sy = -128;
+        int8_t a_stick_y = (int8_t)sy;
         if (a_stick_x != 0 || a_stick_y != 0) {
             stick_x = a_stick_x;
             stick_y = a_stick_y;

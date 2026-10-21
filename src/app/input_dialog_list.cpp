@@ -97,23 +97,36 @@ void UpdateDisplay() {
     for (size_t i = 0; i < g_dlg.buttons.size(); i++) {
         const auto& btn = g_dlg.buttons[i];
         int slot = m.find_by_id(btn.id);
+        bool is_analog = (btn.id == EMU_ID_ANALOG_LEFT_X || btn.id == EMU_ID_ANALOG_LEFT_Y);
         
-        // Keyboard (keyset 0)
+        // Keyboard (keyset 0).  An analog axis has no meaningful keyboard
+        // binding; the keyboard column is disabled for these rows.
         char buf[128];
         uint32_t kb_code = 0;
-        if (slot >= 0 && m.codes[slot][0] != INPUT_NONE) {
+        if (!is_analog && slot >= 0 && m.codes[slot][0] != INPUT_NONE) {
             kb_code = m.codes[slot][0];
         }
-        InputSystem::describe(kb_code, buf, sizeof(buf));
-        SetWindowTextA(g_dlg.edit_kb[i], buf);
+        if (is_analog) {
+            SetWindowTextA(g_dlg.edit_kb[i], "Analog");
+        } else {
+            InputSystem::describe(g_dlg.port, kb_code, buf, sizeof(buf));
+            SetWindowTextA(g_dlg.edit_kb[i], buf);
+        }
         
         // Gamepad (keyset 1)
         uint32_t gp_code = 0;
         if (slot >= 0 && m.codes[slot][1] != INPUT_NONE) {
             gp_code = m.codes[slot][1];
         }
-        InputSystem::describe(gp_code, buf, sizeof(buf));
-        SetWindowTextA(g_dlg.edit_gp[i], buf);
+        if (is_analog && gp_code == 0) {
+            // The stick works without an explicit binding (the core defaults to
+            // the left-stick axes).  Say so instead of showing a bare "--".
+            SetWindowTextA(g_dlg.edit_gp[i],
+                           btn.id == EMU_ID_ANALOG_LEFT_X ? "Auto (axis 0)" : "Auto (axis 1)");
+        } else {
+            InputSystem::describe(g_dlg.port, gp_code, buf, sizeof(buf));
+            SetWindowTextA(g_dlg.edit_gp[i], buf);
+        }
     }
 }
 
@@ -185,6 +198,10 @@ void LayoutControls() {
         g_dlg.btn_kb[i] = CreateWindowExW(0, L"BUTTON", L"Set", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
             left_margin + button_name_w + spacing*2 + edit_w, cur_y, btn_w, row_h, g_dlg.hwnd, (HMENU)(3000 + (int)i), GetModuleHandle(nullptr), nullptr);
         SendMessageW(g_dlg.btn_kb[i], WM_SETFONT, (WPARAM)g_ui_font, TRUE);
+        if (g_dlg.buttons[i].id == EMU_ID_ANALOG_LEFT_X ||
+            g_dlg.buttons[i].id == EMU_ID_ANALOG_LEFT_Y) {
+            EnableWindow(g_dlg.btn_kb[i], FALSE);
+        }
         
         // Gamepad edit box
         g_dlg.edit_gp[i] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_READONLY | ES_AUTOHSCROLL,
@@ -329,7 +346,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     g_dlg.listening_slot = idx;
                     InputSystem& in = InputSystem::get();
                     in.set_capture_key_set(1);
-                    in.set_capture_type(2); // gamepad only
+                    bool analog_row = (g_dlg.buttons[idx].id == EMU_ID_ANALOG_LEFT_X ||
+                                       g_dlg.buttons[idx].id == EMU_ID_ANALOG_LEFT_Y);
+                    in.set_capture_type(analog_row ? 3 : 2); // axis only / gamepad only
                     in.set_capture_turbo(false);
                     int slot = in.mapping(g_dlg.port).find_by_id(g_dlg.buttons[idx].id);
                     if (slot < 0) {

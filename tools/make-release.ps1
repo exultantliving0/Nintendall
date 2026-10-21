@@ -1,10 +1,11 @@
-# Rebuilds the three files that get attached to a GitHub release, so they can
-# never drift from the binaries the installer actually ships.
+# Rebuilds the files that get attached to a GitHub release, so they can never
+# drift from the binaries the installer actually ships.
 #
-#   Nintendall-Setup.exe        the installer itself (built by make-setup.ps1)
-#   Nintendall-Portable.zip     the same payload, unpacked, for people who
-#                               would rather not run an installer
-#   Nintendall-Setup.exe.sha256 hash of the installer, in sha256sum format
+#   Nintendall-Setup.exe          the installer itself (built by make-setup.ps1)
+#   Nintendall-Portable.zip       the same payload, unpacked, for people who
+#                                 would rather not run an installer
+#   Nintendall-Setup.exe.sha256   hash of the installer, in sha256sum format
+#   Nintendall-Portable.zip.sha256 hash of the portable zip
 #
 # Run tools\make-setup.ps1 first; this reads what it staged rather than
 # rebuilding anything, so the two can never disagree.
@@ -42,13 +43,16 @@ try {
 }
 Write-Host "==> Nintendall-Portable.zip" -ForegroundColor Cyan
 
-# --- installer hash --------------------------------------------------------
-# Written in the "<hash>  <filename>" form sha256sum produces, so it can be
+# --- asset hashes ----------------------------------------------------------
+# Written in the "<hash>  <filename>" form sha256sum produces, so they can be
 # checked with `certutil -hashfile` or any standard tool without editing.
-$hash = (Get-FileHash $setupExe -Algorithm SHA256).Hash.ToLower()
-$hashFile = Join-Path $OutputDir 'Nintendall-Setup.exe.sha256'
-"$hash  Nintendall-Setup.exe" | Set-Content -Path $hashFile -Encoding ascii -NoNewline
-Write-Host "==> Nintendall-Setup.exe.sha256" -ForegroundColor Cyan
+foreach ($asset in @('Nintendall-Setup.exe', 'Nintendall-Portable.zip')) {
+    $assetPath = Join-Path $OutputDir $asset
+    $hash = (Get-FileHash $assetPath -Algorithm SHA256).Hash.ToLower()
+    $hashFile = Join-Path $OutputDir "$asset.sha256"
+    "$hash  $asset" | Set-Content -Path $hashFile -Encoding ascii -NoNewline
+    Write-Host "==> $asset.sha256" -ForegroundColor Cyan
+}
 
 Write-Host ''
 foreach ($n in @('Nintendall-Setup.exe', 'Nintendall-Portable.zip')) {
