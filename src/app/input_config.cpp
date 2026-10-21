@@ -506,8 +506,6 @@ static const char* axis_name(int axis, ControllerProfile profile) {
 // =============================================================================
 
 InputSystem::InputSystem() {
-    memset(g_pad_pressed, 0, sizeof(g_pad_pressed));
-    memset(g_pad_prev, 0, sizeof(g_pad_prev));
     memset(g_map, 0, sizeof(g_map));
     memset(g_analog, 0, sizeof(g_analog));
     for (int i = 0; i < INPUT_MAX_PORTS; i++) {
@@ -538,23 +536,9 @@ void InputSystem::poll() {
 
     g_frame++;
 
-    memcpy(g_pad_prev, g_pad_pressed, sizeof(g_pad_prev));
-    memset(g_pad_pressed, 0, sizeof(g_pad_pressed));
     memset(g_analog, 0, sizeof(g_analog));
 
     for (int port = 0; port < INPUT_MAX_PORTS; port++) {
-        // GameController path
-        SDL_Gamepad* gp = s_gamepads[port];
-        if (gp) {
-            int bits = 0;
-            for (int i = 0; i < SDL_BUTTON_COUNT; i++) {
-                if (SDL_GetGamepadButton(gp, sdl_button_map[i].sdl)) {
-                    bits |= (1 << sdl_button_map[i].emu);
-                }
-            }
-            g_pad_pressed[port] = bits;
-        }
-
         // Read all six standard axes, whether this is a GameController or a
         // raw joystick.  Triggers are included: on the NSO N64 pad SDL exposes
         // Z and C-Down as the trigger axes, so they must still reach the core.
@@ -602,28 +586,6 @@ int InputSystem::is_pressed(unsigned port, EmuInputId id) const {
     if (id >= EMU_ID_ANALOG_LEFT_X && id <= EMU_ID_TRIGGER_RIGHT) {
         int axis = id - EMU_ID_ANALOG_LEFT_X;
         if (axis >= 0 && axis < INPUT_AXIS_COUNT) return this->g_analog[port][axis] != 0 ? 1 : 0;
-    }
-
-    // Check raw joystick buttons/axes/hats
-    if (id >= EMU_ID_JOYSTICK_UP && id < EMU_ID_JOYSTICK_UP + 64) {
-        int raw_idx = id - EMU_ID_JOYSTICK_UP;
-        if (raw_idx < 32) {
-            // Buttons 0-31
-            SDL_Joystick* joy = s_joysticks[port];
-            if (joy && raw_idx < s_joystick_num_buttons[port]) {
-                return SDL_GetJoystickButton(joy, raw_idx) ? 1 : 0;
-            }
-        } else if (raw_idx < 64) {
-            // Hats 0-3 (4 directions each)
-            int hat_idx = (raw_idx - 32) / 4;
-            int dir = (raw_idx - 32) % 4;
-            SDL_Joystick* joy = s_joysticks[port];
-            if (joy && hat_idx < s_joystick_num_hats[port]) {
-                Uint8 hat = SDL_GetJoystickHat(joy, hat_idx);
-                Uint8 mask = (dir == 0) ? SDL_HAT_UP : (dir == 1) ? SDL_HAT_DOWN : (dir == 2) ? SDL_HAT_LEFT : SDL_HAT_RIGHT;
-                return (hat & mask) ? 1 : 0;
-            }
-        }
     }
 
     const PortMapping& m = g_map[port];
@@ -713,7 +675,6 @@ void InputSystem::begin_capture(unsigned port, int slot) {
     g_capture_port = (int)(port & 3);
     g_capture_slot = slot;
     s_cap_has_snapshot = false;
-    memcpy(g_pad_prev, g_pad_pressed, sizeof(g_pad_prev));
     while (GetAsyncKeyState(VK_LBUTTON) & 1) { }
     for (int v = 1; v <= 0x1FF; v++) (void)GetAsyncKeyState(v);
 }

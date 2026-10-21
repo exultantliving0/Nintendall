@@ -57,6 +57,18 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(SDL3)
 
+# Ship a stripped SDL3.dll in release builds.  SDL3's build does not strip its
+# output, and the symbol table is dead weight in the installer payload.
+# add_custom_command(TARGET) cannot reach a target defined in SDL3's own
+# subdirectory, so this is a dedicated target instead.  (The app executable
+# is stripped by src/app/CMakeLists.txt.)
+if(MINGW AND CMAKE_BUILD_TYPE STREQUAL "Release" AND TARGET SDL3-shared)
+    add_custom_target(strip_sdl3 ALL
+        COMMAND ${CMAKE_STRIP} $<TARGET_FILE:SDL3-shared>
+        DEPENDS SDL3-shared
+        COMMENT "Stripping SDL3.dll")
+endif()
+
 # =============================================================================
 # Platform settings
 # =============================================================================

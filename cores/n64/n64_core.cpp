@@ -179,8 +179,6 @@ static int n64_run_frame(EmuCoreHandle core) {
             return c->input_state_cb(c->userdata, 0, EMU_DEVICE_JOYPAD, 0, id) != 0;
         };
 
-        bool shift = down(EMU_ID_SELECT);
-
         if (down(EMU_ID_A))      buttons |= 0x0080u;  // A_BUTTON
         if (down(EMU_ID_B))      buttons |= 0x0040u;  // B_BUTTON
         if (down(EMU_ID_Y))      buttons |= 0x0020u;  // Z_TRIG

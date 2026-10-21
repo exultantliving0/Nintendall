@@ -92,7 +92,7 @@ Sign-IfPossible $appExe
 # -static matters: without it the installer imports libstdc++-6.dll and
 # libgcc_s_seh-1.dll, and then fails to start on any machine that does not
 # have MinGW installed ("libstdc++-6.dll is missing").
-$gxxFlags = @('-O2', '-std=c++17', '-municode', '-static')
+$gxxFlags = @('-O2', '-std=c++17', '-municode', '-static', '-s')
 $gxxLibs  = @(
     '-luser32', '-lgdi32', '-lshell32', '-lshlwapi',
     '-lole32', '-lcomctl32', '-ladvapi32', '-luuid'

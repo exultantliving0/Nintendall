@@ -163,8 +163,6 @@ public:
 private:
     InputSystem();
     PortMapping g_map[INPUT_MAX_PORTS];
-    int         g_pad_pressed[INPUT_MAX_PORTS];   // bitmask of XINPUT_BUTTONS
-    int         g_pad_prev[INPUT_MAX_PORTS];      // previous frame, for edges
     int8_t      g_analog[INPUT_MAX_PORTS][6];     // analog axes: LX, LY, RX, RY, LT, RT
     int         g_capture_port = -1;
     int         g_capture_slot = -1;

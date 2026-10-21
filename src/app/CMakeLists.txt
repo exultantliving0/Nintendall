@@ -29,6 +29,14 @@ if(MINGW)
     # same symbols (notably crc32).  All implementations are the standard
     # CRC-32, so allow the linker to pick the first definition.
     target_link_options(nintendall PRIVATE -Wl,--allow-multiple-definition)
+
+    # Ship a stripped executable.  strip only drops the symbol table (there is
+    # no debug info in release builds anyway), not code or imports, and this
+    # runs before the installer signs the payload.
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        add_custom_command(TARGET nintendall POST_BUILD
+            COMMAND ${CMAKE_STRIP} $<TARGET_FILE:nintendall>)
+    endif()
 endif()
 
 set_target_properties(nintendall PROPERTIES
