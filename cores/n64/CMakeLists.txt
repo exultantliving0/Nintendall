@@ -93,6 +93,16 @@ set(RSP_CXD4_RENAMES
     -DCoreDoCommand=cxd4_CoreDoCommand
     -DDebugMessage=cxd4_DebugMessage
     -DPluginGetVersion=cxd4_PluginGetVersion
+    # The plugin entry points below have the same names as GLideN64's exports.
+    # nintendall links with --allow-multiple-definition, so leaving them would
+    # let the linker pick cxd4's RSP implementation for GLideN64 calls (or vice
+    # versa) and break both paths.  Prefix every cxd4 entry point we bind.
+    -DPluginStartup=cxd4_PluginStartup
+    -DPluginShutdown=cxd4_PluginShutdown
+    -DRomOpen=cxd4_RomOpen
+    -DRomClosed=cxd4_RomClosed
+    -DDoRspCycles=cxd4_DoRspCycles
+    -DInitiateRSP=cxd4_InitiateRSP
 )
 
 add_library(m64p_rsp_cxd4 STATIC ${RSP_CXD4_SRCS})
@@ -101,6 +111,92 @@ target_compile_definitions(m64p_rsp_cxd4 PRIVATE
     -DM64P_PLUGIN_API -DWIN32 -DARCH_MIN_SSE2 ${RSP_CXD4_RENAMES})
 target_compile_options(m64p_rsp_cxd4 PRIVATE -msse2 -mstackrealign -w)
 set_target_properties(m64p_rsp_cxd4 PROPERTIES POSITION_INDEPENDENT_CODE ON
+    C_STANDARD 99 C_STANDARD_REQUIRED ON)
+
+# -----------------------------------------------------------------------------
+# GLideN64 (fast OpenGL RDP, Mupen64Plus API flavour)
+#
+# Built as a static library and linked into n64_core.  The dynamic-plugin
+# seams (config lookups, video extension, PluginStartup handle) are resolved by
+# n64_video_fast.cpp; see the DLSYM patch in
+# upstream/GLideN64/src/mupenplus/MupenPlusAPIImpl.cpp.
+#
+# Options that must not change for this integration:
+#   NOHQ=On            - no external libpng / GLideNHQ dependency (and no
+#                        CPU-side texture upscaling)
+#   NO_OSD=On          - no freetype dependency; OSD is the frontend's job
+#   X86_OPT=Off        - the SSE2 inline-assembly matrix loader is 32-bit only
+#                        and does not assemble under current MinGW/GAS
+#   MUPENPLUSAPI_GLIDENUI=Off - no Qt/GLideNUI; settings come from the
+#                        mupen64plus config file
+# -----------------------------------------------------------------------------
+set(MUPENPLUSAPI                On  CACHE BOOL "" FORCE)
+set(MUPENPLUSAPI_GLIDENUI       Off CACHE BOOL "" FORCE)
+set(NO_OSD                      On  CACHE BOOL "" FORCE)
+set(NOHQ                        On  CACHE BOOL "" FORCE)
+set(X86_OPT                     Off CACHE BOOL "" FORCE)
+set(USE_IPO                     Off CACHE BOOL "" FORCE)
+set(GLIDEN64_STATIC             On  CACHE BOOL "" FORCE)
+add_subdirectory("upstream/GLideN64/src" "${CMAKE_CURRENT_BINARY_DIR}/gliden64")
+
+# GLideN64 exports generic plugin entry points (InitiateGFX, ProcessDList,
+# PluginGetVersion, ...).  The version symbol has the same name as
+# mupen64plus-core's api/common.c export; rename ours so both can coexist in
+# one executable.  The config entry points are its *plugins'* function-pointer
+# variables, named exactly like the core's Config* functions, so prefix them
+# too.  The frontend bridge fills them from NintendallCoreSymbol().
+set(GLIDEN64_RENAMES
+    -DPluginGetVersion=GLN64_PluginGetVersion
+    -DConfigGetSharedDataFilepath=GLN64_ConfigGetSharedDataFilepath
+    -DConfigGetUserConfigPath=GLN64_ConfigGetUserConfigPath
+    -DConfigGetUserDataPath=GLN64_ConfigGetUserDataPath
+    -DConfigGetUserCachePath=GLN64_ConfigGetUserCachePath
+    -DConfigOpenSection=GLN64_ConfigOpenSection
+    -DConfigDeleteSection=GLN64_ConfigDeleteSection
+    -DConfigSaveSection=GLN64_ConfigSaveSection
+    -DConfigSaveFile=GLN64_ConfigSaveFile
+    -DConfigSetDefaultInt=GLN64_ConfigSetDefaultInt
+    -DConfigSetDefaultFloat=GLN64_ConfigSetDefaultFloat
+    -DConfigSetDefaultBool=GLN64_ConfigSetDefaultBool
+    -DConfigSetDefaultString=GLN64_ConfigSetDefaultString
+    -DConfigGetParamInt=GLN64_ConfigGetParamInt
+    -DConfigGetParamFloat=GLN64_ConfigGetParamFloat
+    -DConfigGetParamBool=GLN64_ConfigGetParamBool
+    -DConfigGetParamString=GLN64_ConfigGetParamString
+    -DConfigExternalGetParameter=GLN64_ConfigExternalGetParameter
+    -DConfigExternalOpen=GLN64_ConfigExternalOpen
+    -DConfigExternalClose=GLN64_ConfigExternalClose
+)
+target_compile_definitions(mupen64plus-video-GLideN64 PRIVATE ${GLIDEN64_RENAMES})
+target_compile_definitions(mupen64plus-video-GLideN64 PRIVATE
+    -DNINTENDALL_STATIC_PLUGIN)
+
+# -----------------------------------------------------------------------------
+# mupen64plus-rsp-hle (fast RSP)
+#
+# Only the HLE engine is compiled; upstream's plugin.c wrapper is replaced by
+# n64_rsp_hle.c so there is no dynamic-lib/config/fallback path.  See that
+# file for the callback contract.
+# -----------------------------------------------------------------------------
+set(RSP_HLE "${CMAKE_CURRENT_SOURCE_DIR}/upstream/mupen64plus-rsp-hle/src")
+add_library(m64p_rsp_hle STATIC
+    "${RSP_HLE}/alist.c"
+    "${RSP_HLE}/alist_audio.c"
+    "${RSP_HLE}/alist_naudio.c"
+    "${RSP_HLE}/alist_nead.c"
+    "${RSP_HLE}/audio.c"
+    "${RSP_HLE}/cicx105.c"
+    "${RSP_HLE}/hle.c"
+    "${RSP_HLE}/hvqm.c"
+    "${RSP_HLE}/jpeg.c"
+    "${RSP_HLE}/memory.c"
+    "${RSP_HLE}/mp3.c"
+    "${RSP_HLE}/musyx.c"
+    "${RSP_HLE}/re2.c"
+)
+target_include_directories(m64p_rsp_hle PRIVATE "${RSP_HLE}")
+target_compile_options(m64p_rsp_hle PRIVATE -w -ffast-math)
+set_target_properties(m64p_rsp_hle PROPERTIES POSITION_INDEPENDENT_CODE ON
     C_STANDARD 99 C_STANDARD_REQUIRED ON)
 
 # -----------------------------------------------------------------------------
@@ -191,7 +287,6 @@ set(M64P_CORE_SRCS
     "${SHIM}/sdl_shim.c"
     "${SHIM}/upstream_stubs.c"
 )
-
 # zlib is compiled straight into m64p_core (same archive) so that minizip /
 # savestates can reference its symbols, but with hidden visibility so zlib's
 # public symbols (notably crc32, which mGBA also exports) do not leak into the
@@ -210,7 +305,9 @@ target_include_directories(m64p_core PUBLIC
     "${M64P_ROOT}/subprojects/md5"
     "${M64P_ROOT}/subprojects/xxhash"
 )
-target_compile_definitions(m64p_core PRIVATE -DM64P_PARALLEL -DWIN32)
+# The GLideN64 bridge in n64_core supplies the real VidExt_* entry points.
+# Keep the old headless no-ops out of the same link.
+target_compile_definitions(m64p_core PRIVATE -DM64P_PARALLEL -DWIN32 -DNINTENDALL_FAST_VIDEO)
 set_target_properties(m64p_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # -----------------------------------------------------------------------------
@@ -302,12 +399,17 @@ add_library(n64_core STATIC
     n64_core.cpp
     n64_glue.c
     n64_rsp.c
+    n64_rsp_hle.c
+    n64_video_fast.cpp
 )
 target_link_libraries(n64_core PRIVATE
     emu_framework
     m64p_core
     m64p_rsp_cxd4
+    m64p_rsp_hle
+    mupen64plus-video-GLideN64
     angrylion
+    opengl32
 )
 target_include_directories(n64_core PRIVATE
     "${M64P_SRC}"
@@ -315,6 +417,8 @@ target_include_directories(n64_core PRIVATE
     "${RSP_CXD4}"
     "${ANG}"
     "${ZLIB}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/upstream/GLideN64/src"
+    "${RSP_HLE}"
 )
 target_compile_definitions(n64_core PRIVATE -DWIN32)
 if(N64_HAS_DYNAREC)

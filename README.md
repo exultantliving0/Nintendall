@@ -30,6 +30,20 @@ the Start menu. To remove it, use *Settings → Apps → Installed apps → Nint
 `saves` folder beside the executable, in a subfolder per console
 (`saves\n64`, `saves\gba`, …), so they survive closing and reopening the app.
 
+### N64 rendering
+
+N64 games have two renderers under *Emulation → Video*:
+
+- **Accurate** (default) uses angrylion's software RDP and cxd4's LLE RSP. It
+  is the compatibility reference.
+- **Fast** uses GLideN64 for graphics and mupen64plus-rsp-hle, while keeping
+  cxd4 for audio. Rendering moves to the GPU and CPU use drops substantially.
+
+The choice is remembered per game in `saves\video.cfg`. Changing it reloads the
+current ROM automatically. Fast mode needs an OpenGL 3.3 driver; if the context
+cannot be created, switch that game back to Accurate. Fast mode currently uses
+native N64 resolution and 4:3 output; upscaling options are not exposed yet.
+
 ## For developers
 
 ```powershell

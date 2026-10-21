@@ -22,6 +22,8 @@ run a game.
 | N64 | Mupen64Plus-Core | 2.6.0 (July 2024) | GPL-2.0 | **working** |
 | N64 | Mupen64Plus-RSP-CXD4 | `00906a9` (2026-06-23) | CC0 | **working** |
 | N64 | Angrylion | *not pinned* | zlib | **working** (software RDP) |
+| N64 | GLideN64 | *not pinned* | GPL-2.0 | **working** (fast OpenGL RDP) |
+| N64 | Mupen64Plus-RSP-HLE | 2.6.0 (July 2024) | GPL-2.0 | **working** (fast RSP) |
 | NDS | DeSmuME | — | GPL-2.0 | **stub, not implemented** |
 | GameCube / Wii | Dolphin | — | GPL-2.0 | **stub, not implemented** |
 | 3DS | Azahar | — | GPL-2.0 | **stub, not implemented** |
@@ -46,6 +48,8 @@ games run.
 | Mupen64Plus-Core | <https://github.com/mupen64plus/mupen64plus-core> |
 | Mupen64Plus-RSP-CXD4 | <https://github.com/mupen64plus/mupen64plus-rsp-cxd4> |
 | Angrylion | <https://github.com/grpc/angrylion> (archived upstream; vendored tree in use) |
+| GLideN64 | <https://github.com/gonetz/GLideN64> |
+| Mupen64Plus-RSP-HLE | <https://github.com/mupen64plus/mupen64plus-rsp-hle> |
 | DeSmuME | <https://github.com/nurpax/desmume> |
 | Dolphin | <https://github.com/dolphin-emu/dolphin> |
 | Azahar | <https://github.com/azahar-emu/azahar> |
@@ -68,6 +72,8 @@ The full text of each licence is shipped in the vendored tree:
 | mGBA | `cores/mgba/upstream/LICENSE` |
 | Mupen64Plus-Core | `cores/n64/upstream/mupen64plus-core/doc/gpl-license` |
 | Mupen64Plus-RSP-CXD4 | `cores/n64/upstream/mupen64plus-rsp-cxd4/COPYING` (CC0) |
+| GLideN64 | `cores/n64/upstream/GLideN64/LICENSE` |
+| Mupen64Plus-RSP-HLE | `cores/n64/upstream/mupen64plus-rsp-hle/LICENSES` |
 | zlib | `cores/n64/upstream/zlib/LICENSE` |
 
 ## Build-time source lookups

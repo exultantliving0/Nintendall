@@ -65,6 +65,9 @@
 #include "screen.h"
 #include "parallel_al.h"
 
+/* GLideN64 fast-video bridge (selected per game by the frontend). */
+#include "n64_video_fast.h"
+
 /* Angrylion calls the parallel_* entry points unconditionally; config.parallel
  * decides at runtime whether the work is actually split.  With
  * N64_PARALLEL_VIDEO the real thread pool (parallel_al.cpp) is linked in.
@@ -80,6 +83,11 @@ void parallel_close(void) {}
 void n64_rsp_init(RSP_INFO* info);
 void n64_rsp_execute(void);
 void n64_rsp_rom_closed(void);
+
+/* Fast stack: mupen64plus-rsp-hle (n64_rsp_hle.c). */
+int  n64_rsp_hle_init(RSP_INFO* info);
+void n64_rsp_hle_execute(void);
+void n64_rsp_hle_rom_closed(void);
 
 /* ------------------------------------------------------------------------- */
 /* Constants                                                                 */
@@ -124,11 +132,20 @@ static int  s_core_up;
 static int  s_rom_open;
 static HANDLE s_emu_thread;
 
+/* Fast stack selection.  s_fast_video is set before startup() and decides
+ * which RSP/video implementation the plugin tables bind to; s_fast_ready is
+ * set once GLideN64's plugin layer has been started successfully. */
+static int  s_fast_video;
+static int  s_fast_ready;
+static int  s_fast_audio_lle_logged;
+
 /* Plugin info structs handed to us by plugin.c.  They are passed by value and
  * contain pointers into g_dev, which is a process global and therefore stable.
  * We hold our own copies. */
 static GFX_INFO   s_gfx_info;
 static AUDIO_INFO s_audio_info;
+static RSP_INFO   s_rsp_info;
+static int        s_rsp_info_valid;
 static int        s_gfx_up;
 static int        s_audio_up;
 static int        s_input_up;
@@ -510,7 +527,9 @@ static m64p_error CALL gfx_PluginGetVersion(m64p_plugin_type* type, int* version
     if (type)    *type = M64PLUGIN_GFX;
     if (version) *version = 0x020200;
     if (api)     *api = GFX_API_VERSION;
-    if (name)    *name = "Nintendall angrylion software RDP";
+    if (name)    *name = s_fast_video
+        ? "Nintendall GLideN64 (fast)"
+        : "Nintendall angrylion software RDP";
     if (caps)    *caps = 0;
     return M64ERR_SUCCESS;
 }
@@ -518,12 +537,26 @@ static m64p_error CALL gfx_PluginGetVersion(m64p_plugin_type* type, int* version
 static int CALL gfx_InitiateGFX(GFX_INFO info)
 {
     s_gfx_info = info;   /* by-value handoff from plugin.c */
+
+    if (s_fast_video) {
+        if (!n64_fast_video_initiate(&info))
+            return 0;
+        s_gfx_up = 1;
+        return 1;
+    }
+
     s_gfx_up = 1;
     return 1;
 }
 
 static void CALL gfx_ProcessDList(void)
 {
+    if (s_fast_video) {
+        /* GLideN64 converts the F3DEX/F3DEX2 display list itself. */
+        n64_fast_video_process_dlist();
+        return;
+    }
+
     /* angrylion is an RDP-only renderer: it consumes a raw RDP command list,
      * not an F3DEX display list.  Display lists must be turned into RDP
      * commands by an LLE RSP (which also writes the DPC registers); this entry
@@ -533,6 +566,11 @@ static void CALL gfx_ProcessDList(void)
 
 static void CALL gfx_ProcessRDPList(void)
 {
+    if (s_fast_video) {
+        n64_fast_video_process_rdp_list();
+        return;
+    }
+
     /* The RDP command list is ready (DPC_START/DPC_END were written by the
      * LLE RSP): render it. */
     n64video_process_list();
@@ -548,6 +586,23 @@ static void CALL gfx_UpdateScreen(void)
     reset = InterlockedExchange(&s_pending_reset, 0);
     if (reset != 0)
         CoreDoCommand(M64CMD_RESET, (reset == 2) ? 1 : 0, NULL);
+
+    if (s_fast_video) {
+        /* GLideN64 presents straight to its child HWND.  There is no software
+         * frame to copy, but keep the handshake so the frontend's run_frame()
+         * still wakes once per VI for audio, input and state commands. */
+        n64_fast_video_update_screen();
+
+        EnterCriticalSection(&s_lock);
+        if (!s_exit) {
+            s_out_w = 0;
+            s_out_h = 0;
+            s_presented++;
+            WakeAllConditionVariable(&s_cond_frame);
+        }
+        LeaveCriticalSection(&s_lock);
+        return;
+    }
 
     n64video_update_screen();   /* -> screen_write() -> s_capture */
 
@@ -596,6 +651,10 @@ static void CALL gfx_UpdateScreen(void)
 
 static void CALL gfx_RomClosed(void)
 {
+    if (s_fast_video) {
+        n64_fast_video_rom_closed();
+        return;
+    }
     n64video_close();
 }
 
@@ -603,20 +662,55 @@ static int CALL gfx_RomOpen(void)
 {
     /* main_run() calls this right after init_device(), which is the point at
      * which g_dev (and therefore our GFX_INFO pointers) is fully populated. */
+    if (s_fast_video)
+        return n64_fast_video_rom_open();
+
     n64video_init(&s_vi_config);
     return 1;
 }
-static void CALL gfx_ShowCFB(void) {}
-static void CALL gfx_ViStatusChanged(void) {}
-static void CALL gfx_ViWidthChanged(void) {}
-static void CALL gfx_ChangeWindow(void) {}
-static void CALL gfx_MoveScreen(int x, int y) { (void)x; (void)y; }
-static void CALL gfx_SetRenderingCallback(void (*cb)(int)) { (void)cb; }
-static void CALL gfx_ResizeVideoOutput(int w, int h) { (void)w; (void)h; }
-static void CALL gfx_FBRead(unsigned int addr) { (void)addr; }
-static void CALL gfx_FBWrite(unsigned int addr, unsigned int size) { (void)addr; (void)size; }
+static void CALL gfx_ShowCFB(void)
+{
+    if (s_fast_video) n64_fast_video_show_cfb();
+}
+static void CALL gfx_ViStatusChanged(void)
+{
+    if (s_fast_video) n64_fast_video_vi_status_changed();
+}
+static void CALL gfx_ViWidthChanged(void)
+{
+    if (s_fast_video) n64_fast_video_vi_width_changed();
+}
+static void CALL gfx_ChangeWindow(void)
+{
+    if (s_fast_video) n64_fast_video_change_window();
+}
+static void CALL gfx_MoveScreen(int x, int y)
+{
+    if (s_fast_video) n64_fast_video_move_screen(x, y);
+}
+static void CALL gfx_SetRenderingCallback(void (*cb)(int))
+{
+    if (s_fast_video) n64_fast_video_set_rendering_callback(cb);
+}
+static void CALL gfx_ResizeVideoOutput(int w, int h)
+{
+    if (s_fast_video) n64_fast_video_resize_output(w, h);
+}
+static void CALL gfx_FBRead(unsigned int addr)
+{
+    if (s_fast_video) n64_fast_video_fb_read(addr);
+}
+static void CALL gfx_FBWrite(unsigned int addr, unsigned int size)
+{
+    if (s_fast_video) n64_fast_video_fb_write(addr, size);
+}
 static void CALL gfx_FBGetFrameBufferInfo(void* p)
 {
+    if (s_fast_video) {
+        n64_fast_video_fb_get_info(p);
+        return;
+    }
+
     /* Report "no framebuffer" so fb.c leaves RDRAM alone.  angrylion already
      * renders into RDRAM, so there is nothing to protect. */
     if (p) memset(p, 0, sizeof(unsigned int) * 4 * 6);
@@ -624,6 +718,11 @@ static void CALL gfx_FBGetFrameBufferInfo(void* p)
 
 static void CALL gfx_ReadScreen(void* dest, int* width, int* height, int front)
 {
+    if (s_fast_video) {
+        n64_fast_video_read_screen(dest, width, height, front);
+        return;
+    }
+
     (void)front;
     if (width)  *width  = (int)s_out_w;
     if (height) *height = (int)s_out_h;
@@ -799,27 +898,74 @@ static m64p_error CALL rsp_PluginGetVersion(m64p_plugin_type* type, int* version
     if (type)    *type = M64PLUGIN_RSP;
     if (version) *version = 0x020600;
     if (api)     *api = RSP_API_VERSION;
-    if (name)    *name = "Nintendall mupen64plus-rsp-cxd4 bridge";
+    if (name)    *name = s_fast_video
+        ? "Nintendall mupen64plus-rsp-hle bridge"
+        : "Nintendall mupen64plus-rsp-cxd4 bridge";
     if (caps)    *caps = 0;
     return M64ERR_SUCCESS;
 }
 
+/* The fast stack uses HLE for graphics (that is where the CPU saving is) but
+ * still runs the audio microcode through cxd4.  HLE audio is an approximation
+ * and is audibly different on some games (Ocarina of Time in particular), while
+ * audio tasks are cheap compared with a full LLE graphics task.  The task type
+ * is the first word of the OSTask at DMEM+0xfc0; the core stores it in native
+ * byte order, exactly as rsp_core.c's do_SP_Task() checks it. */
+static int rsp_fast_task_is_audio(void)
+{
+    uint32_t type = 0;
+
+    if (!s_rsp_info_valid || s_rsp_info.DMEM == NULL)
+        return 0;
+
+    memcpy(&type, s_rsp_info.DMEM + 0xfc0, sizeof(type));
+    return type == 2;   /* M_AUDTASK */
+}
+
 static unsigned int CALL rsp_DoRspCycles(unsigned int cycles)
 {
-    n64_rsp_execute();
+    if (s_fast_video) {
+        if (rsp_fast_task_is_audio()) {
+            if (!s_fast_audio_lle_logged) {
+                glue_log(M64MSG_INFO, "fast RSP: using cxd4 LLE for audio tasks");
+                s_fast_audio_lle_logged = 1;
+            }
+            n64_rsp_execute();      /* cxd4: accurate LLE audio */
+        } else {
+            n64_rsp_hle_execute();  /* HLE: fast graphics */
+        }
+    } else {
+        n64_rsp_execute();
+    }
     return cycles;
 }
 
 static void CALL rsp_InitiateRSP(RSP_INFO info, unsigned int* cycle_count)
 {
     (void)cycle_count;
-    n64_rsp_init(&info);
+    s_rsp_info = info;
+    s_rsp_info_valid = 1;
+
+    if (s_fast_video) {
+        /* Both backends need their RSP state initialized: HLE handles the
+         * graphics/other tasks and cxd4 handles audio tasks. */
+        n64_rsp_hle_init(&info);
+        n64_rsp_init(&info);
+    } else {
+        n64_rsp_init(&info);
+    }
     s_rsp_up = 1;
 }
 
 static void CALL rsp_RomClosed(void)
 {
-    n64_rsp_rom_closed();
+    if (s_fast_video) {
+        n64_rsp_hle_rom_closed();
+        n64_rsp_rom_closed();
+    } else {
+        n64_rsp_rom_closed();
+    }
+    s_rsp_info_valid = 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -930,6 +1076,12 @@ static DWORD WINAPI emu_thread_proc(LPVOID param)
     /* Blocks until the game stops (M64CMD_STOP / main_stop). */
     CoreDoCommand(M64CMD_EXECUTE, 0, NULL);
 
+    /* GLideN64 normally releases its context in RomClosed(), which main_run()
+     * calls on this thread.  Do it again defensively so a failed/aborted run
+     * cannot leave a WGL context current on a thread that is about to die. */
+    if (s_fast_video)
+        n64_fast_video_release_thread_context();
+
     /* Wake the frontend in case it is blocked waiting for a frame. */
     EnterCriticalSection(&s_lock);
     s_exit = 1;
@@ -948,6 +1100,22 @@ void n64_glue_set_callbacks(void* user, n64_video_cb video, n64_audio_cb audio)
     s_user = user;
     s_video_cb = video;
     s_audio_cb = audio;
+}
+
+void n64_glue_set_video_config(int fast, void* window_handle,
+                               int width, int height)
+{
+    if (s_core_up) {
+        /* The frontend tears the core down and starts a new one when this
+         * changes, so silently switching plugins mid-run is not supported. */
+        glue_log(M64MSG_WARNING,
+                 "video backend selection ignored: core is already running");
+        return;
+    }
+
+    s_fast_video = fast ? 1 : 0;
+    if (s_fast_video)
+        n64_fast_video_configure(window_handle, width, height);
 }
 
 /* Older builds let mupen64plus keep its battery saves in the global per-user
@@ -1086,6 +1254,15 @@ int n64_glue_startup(const char* data_path)
     }
 
     s_core_up = 1;
+
+    if (s_fast_video) {
+        if (n64_fast_video_plugin_startup() != 0) {
+            glue_log(M64MSG_ERROR, "failed to start the GLideN64 plugin layer");
+            return -1;
+        }
+        s_fast_ready = 1;
+    }
+
     return 0;
 }
 
@@ -1099,6 +1276,13 @@ int n64_glue_load_rom(const uint8_t* rom, size_t rom_size)
         CoreDoCommand(M64CMD_ROM_CLOSE, 0, NULL);
         s_rom_open = 0;
         s_gfx_up = s_audio_up = s_input_up = s_rsp_up = 0;
+    }
+
+    /* GLideN64 renders into a child HWND owned by the frontend.  Create it
+     * before the core starts so gfx.romOpen() can acquire its WGL context. */
+    if (s_fast_video && n64_fast_video_attach() != 0) {
+        glue_log(M64MSG_ERROR, "failed to attach the GLideN64 window");
+        return -1;
     }
 
     audio_ring_reset();
@@ -1173,8 +1357,12 @@ int n64_glue_frame(void)
      * 1.5%, which slowly fills the frontend ring until it starts discarding
      * audio: sound drifting out of step with picture over a couple of minutes.
      *
-     * So the wait is done here instead, against the NTSC field rate. */
-    {
+     * So the wait is done here instead, against the NTSC field rate.
+     *
+     * The fast stack is different: GLideN64 swaps at the VI boundary, and the
+     * mupen64plus speed limiter is left enabled, so pacing here would sleep
+     * twice and halve the frame rate. */
+    if (!s_fast_video) {
         static LARGE_INTEGER s_next_vi = { 0 };
         LARGE_INTEGER freq, now;
 
@@ -1431,6 +1619,13 @@ void n64_glue_shutdown(void)
         CoreDoCommand(M64CMD_ROM_CLOSE, 0, NULL);
         s_rom_open = 0;
     }
+
+    if (s_fast_ready) {
+        n64_fast_video_plugin_shutdown();
+        s_fast_ready = 0;
+    }
+    if (s_fast_video)
+        n64_fast_video_detach();
 
     CoreShutdown();
     s_core_up = 0;

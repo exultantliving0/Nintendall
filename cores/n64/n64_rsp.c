@@ -34,10 +34,11 @@
 #include "m64p_frontend.h"
 #include "m64p_plugin.h"
 
-/* cxd4 entry points (module.c). */
-void CALL InitiateRSP(RSP_INFO rsp_info, unsigned int* cycle_count);
-unsigned int CALL DoRspCycles(unsigned int cycles);
-void CALL RomClosed(void);
+/* cxd4 entry points (module.c).  They are renamed during compilation so they
+ * cannot collide with GLideN64's identically named plugin exports. */
+void CALL cxd4_InitiateRSP(RSP_INFO rsp_info, unsigned int* cycle_count);
+unsigned int CALL cxd4_DoRspCycles(unsigned int cycles);
+void CALL cxd4_RomClosed(void);
 
 /* module.c's config/core shims - renamed during compilation (see CMakeLists). */
 extern ptr_CoreDoCommand      cxd4_CoreDoCommand;
@@ -67,15 +68,15 @@ void n64_rsp_init(RSP_INFO* info)
     cxd4_CoreDoCommand      = rsp_stub_core_do_command;
     cxd4_ConfigGetParamBool = rsp_stub_config_get_param_bool;
 
-    InitiateRSP(*info, NULL);
+    cxd4_InitiateRSP(*info, NULL);
 }
 
 void n64_rsp_execute(void)
 {
-    DoRspCycles(0);
+    cxd4_DoRspCycles(0);
 }
 
 void n64_rsp_rom_closed(void)
 {
-    RomClosed();
+    cxd4_RomClosed();
 }

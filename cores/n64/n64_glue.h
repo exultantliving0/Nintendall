@@ -47,6 +47,13 @@ typedef void (*n64_audio_cb)(void* user, const int16_t* samples, unsigned frames
  * n64_glue_start(). */
 void n64_glue_set_callbacks(void* user, n64_video_cb video, n64_audio_cb audio);
 
+/* Select the video/RSP stack.  Must be called before n64_glue_startup().
+ * fast != 0 selects GLideN64 + mupen64plus-rsp-hle and renders into
+ * window_handle using width x height client pixels; fast == 0 keeps the
+ * accurate angrylion + cxd4 path (window_handle is ignored). */
+void n64_glue_set_video_config(int fast, void* window_handle,
+                               int width, int height);
+
 /* Bring up the mupen64plus core and prepare the working directories.
  * data_path is the directory used for the core config, the ROM database and
  * battery saves.  Returns 0 on success. */

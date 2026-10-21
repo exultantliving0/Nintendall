@@ -61,6 +61,8 @@
 #define IDM_HELP_ABOUT         1301
 
 #define IDM_EMU_CONTROLS       1104
+#define IDM_VIDEO_ACCURATE     1105
+#define IDM_VIDEO_FAST         1106
 
 #define IDM_ACCEL_LOAD         2001
 #define IDM_ACCEL_SAVE         2002
@@ -130,6 +132,13 @@ static char                     g_rom_base[256] = "";
 static char                     g_rom_title[64] = "";
 static uint32_t                 g_rom_crc = 0;
 static EmuConsoleType           g_console = EMU_CONSOLE_UNKNOWN;
+
+// N64 renderer choice for the loaded game (EmuVideoBackend).  g_gpu_video is
+// true while GLideN64 owns the client area, so WM_PAINT must stop presenting
+// the stale software frame underneath it.
+static int                      g_video_backend = EMU_VIDEO_BACKEND_ACCURATE;
+static bool                     g_gpu_video = false;
+static HMENU                    g_video_menu = nullptr;
 
 static volatile LONG            g_paused = 0;
 static volatile LONG            g_quit = 0;
@@ -567,6 +576,132 @@ static void CurrentRomSavePath(char* out, size_t out_size) {
     out[out_size - 1] = 0;
 }
 
+// Per-game N64 renderer choice.  The key is the frontend's ROM CRC, so it
+// follows the game regardless of where the archive lives.  Unknown games use
+// the accurate backend.
+static void VideoConfigPath(char* out, size_t out_size) {
+    _snprintf(out, out_size - 1, "%s\\video.cfg", g_save_dir);
+    out[out_size - 1] = 0;
+}
+
+static int ReadGameVideoBackend(uint32_t crc) {
+    char path[MAX_PATH];
+    VideoConfigPath(path, sizeof(path));
+
+    FILE* f = fopen(path, "rb");
+    if (!f) return EMU_VIDEO_BACKEND_ACCURATE;
+
+    int result = EMU_VIDEO_BACKEND_ACCURATE;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        char* p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '\r' || *p == '\n' || *p == '#')
+            continue;
+
+        char* end = nullptr;
+        unsigned long key = strtoul(p, &end, 16);
+        if (end == p) continue;
+        while (*end == ' ' || *end == '\t') end++;
+        if (*end != '=') continue;
+
+        if ((uint32_t)key == crc) {
+            result = (atoi(end + 1) != 0)
+                ? EMU_VIDEO_BACKEND_FAST : EMU_VIDEO_BACKEND_ACCURATE;
+            break;
+        }
+    }
+    fclose(f);
+    return result;
+}
+
+static void WriteGameVideoBackend(uint32_t crc, int backend) {
+    char path[MAX_PATH];
+    VideoConfigPath(path, sizeof(path));
+
+    std::vector<std::string> lines;
+    FILE* in = fopen(path, "rb");
+    if (in) {
+        char buf[512];
+        while (fgets(buf, sizeof(buf), in))
+            lines.push_back(buf);
+        fclose(in);
+    }
+
+    char entry[64];
+    _snprintf(entry, sizeof(entry) - 1, "%08X=%d", (unsigned)crc,
+              backend == EMU_VIDEO_BACKEND_FAST ? 1 : 0);
+    entry[sizeof(entry) - 1] = 0;
+
+    bool replaced = false;
+    for (std::string& line : lines) {
+        const char* p = line.c_str();
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '#') continue;
+
+        char* end = nullptr;
+        unsigned long key = strtoul(p, &end, 16);
+        if (end == p) continue;
+        while (*end == ' ' || *end == '\t') end++;
+        if (*end != '=' || (uint32_t)key != crc)
+            continue;
+
+        const bool crlf = line.find("\r\n") != std::string::npos;
+        line = entry;
+        line += crlf ? "\r\n" : "\n";
+        replaced = true;
+    }
+
+    if (!replaced) {
+        if (!lines.empty() && lines.back().find('\n') == std::string::npos)
+            lines.back() += "\r\n";
+        lines.push_back(std::string(entry) + "\r\n");
+    }
+
+    FILE* out = fopen(path, "wb");
+    if (!out) return;
+    for (const std::string& line : lines)
+        fwrite(line.data(), 1, line.size(), out);
+    fclose(out);
+}
+
+static void LoadRom(const char* path);
+
+static void UpdateVideoMenu() {
+    if (!g_video_menu) return;
+
+    const BOOL can_select = (g_core != nullptr &&
+                             g_console == EMU_CONSOLE_NINTENDO_64);
+    const UINT flags = MF_BYCOMMAND | (can_select ? MF_ENABLED : MF_GRAYED);
+    EnableMenuItem(g_video_menu, IDM_VIDEO_ACCURATE, flags);
+    EnableMenuItem(g_video_menu, IDM_VIDEO_FAST, flags);
+
+    if (can_select) {
+        CheckMenuRadioItem(g_video_menu, IDM_VIDEO_ACCURATE, IDM_VIDEO_FAST,
+                           g_video_backend == EMU_VIDEO_BACKEND_FAST
+                               ? IDM_VIDEO_FAST : IDM_VIDEO_ACCURATE,
+                           MF_BYCOMMAND);
+    } else {
+        CheckMenuItem(g_video_menu, IDM_VIDEO_ACCURATE,
+                      MF_BYCOMMAND | MF_UNCHECKED);
+        CheckMenuItem(g_video_menu, IDM_VIDEO_FAST,
+                      MF_BYCOMMAND | MF_UNCHECKED);
+    }
+}
+
+static void SetVideoBackend(int backend) {
+    if (!g_core || g_console != EMU_CONSOLE_NINTENDO_64)
+        return;
+    if (g_video_backend == backend)
+        return;
+
+    // Persist first: LoadRom() reads the table back, which keeps the menu,
+    // the config file and the core instance from ever disagreeing.
+    WriteGameVideoBackend(g_rom_crc, backend);
+    if (g_rom_path[0])
+        LoadRom(g_rom_path);   // restart the ROM with the new stack
+}
+
 static void UnloadCurrentRom() {
     EnterCriticalSection(&g_core_cs);
     if (g_core && g_module) {
@@ -591,6 +726,10 @@ static void UnloadCurrentRom() {
     // Forget the previous core's measured audio rate; the next core re-measures.
     g_spf = 0.0;
     g_frame_audio = 0;
+
+    // No core owns the client area until the next game finishes loading.
+    g_gpu_video = false;
+    UpdateVideoMenu();
 }
 
 static void LoadRom(const char* path) {
@@ -643,6 +782,9 @@ static void LoadRom(const char* path) {
     emu_get_basename(name_src, rom_base, sizeof(rom_base));
     emu_strip_extension(rom_base, rom_base, sizeof(rom_base));
 
+    const int video_backend = (console == EMU_CONSOLE_NINTENDO_64)
+        ? ReadGameVideoBackend(det.crc32) : EMU_VIDEO_BACKEND_ACCURATE;
+
     UnloadCurrentRom();
 
     // Each console has its own pad, so start from its defaults unless the user
@@ -660,6 +802,20 @@ static void LoadRom(const char* path) {
     emu_config_default(&cfg);
     cfg.save_dir = g_save_dir;
     cfg.audio_sample_rate = AUDIO_SAMPLE_RATE;
+    cfg.video_backend = video_backend;
+
+    // The fast N64 renderer draws into a child of this window, cropped to the
+    // client area.  Pass the current size so its first frame starts at the
+    // right resolution instead of resizing after one frame.
+    if (g_hwnd) {
+        RECT rc;
+        GetClientRect(g_hwnd, &rc);
+        cfg.window_handle = g_hwnd;
+        cfg.video_width = rc.right - rc.left;
+        cfg.video_height = rc.bottom - rc.top;
+        if (cfg.video_width <= 0) cfg.video_width = 960;
+        if (cfg.video_height <= 0) cfg.video_height = 720;
+    }
 
     EnterCriticalSection(&g_core_cs);
     g_core = mod->create(&cfg, VideoCallback, AudioCallback, nullptr,
@@ -691,6 +847,10 @@ static void LoadRom(const char* path) {
     g_console = console;
     g_rom_crc = det.crc32;
     g_frame_count = 0;
+    g_video_backend = video_backend;
+    g_gpu_video = (console == EMU_CONSOLE_NINTENDO_64 &&
+                   video_backend == EMU_VIDEO_BACKEND_FAST);
+    UpdateVideoMenu();
 
     // Bring back the game's battery-backed save (SRAM/EEPROM/flash).  This has
     // to run after the ROM is loaded -- cores that only discover the save
@@ -808,6 +968,18 @@ static HMENU BuildMenu() {
     AppendMenuW(emu, MF_STRING, IDM_EMU_POWER_CYCLE, L"&Power Cycle");
     AppendMenuW(emu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(emu, MF_STRING, IDM_EMU_CONTROLS, L"&Configure Controls...");
+    AppendMenuW(emu, MF_SEPARATOR, 0, nullptr);
+
+    // N64 only, applied when a ROM is loaded.  Both stacks stay compiled into
+    // the executable; switching here restarts the current game with the new
+    // renderer and remembers the choice in saves\video.cfg.
+    HMENU video = CreatePopupMenu();
+    AppendMenuW(video, MF_STRING, IDM_VIDEO_ACCURATE,
+                L"&Accurate (angrylion + cxd4)");
+    AppendMenuW(video, MF_STRING, IDM_VIDEO_FAST,
+                L"&Fast (GLideN64 + rsp-hle)");
+    g_video_menu = video;
+    AppendMenuW(emu, MF_POPUP, (UINT_PTR)video, L"&Video");
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)emu, L"&Emulation");
 
     HMENU states = CreatePopupMenu();
@@ -988,12 +1160,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case WM_CREATE:
             g_hwnd = hwnd;
             SetMenu(hwnd, BuildMenu());
+            UpdateVideoMenu();
             return 0;
 
         case WM_COMMAND: {
             const int id = LOWORD(wParam);
             if (id == IDM_FILE_LOAD) { ShowOpenRomDialog(); return 0; }
             if (id == IDM_FILE_EXIT) { PostMessageW(hwnd, WM_CLOSE, 0, 0); return 0; }
+
+            if (id == IDM_VIDEO_ACCURATE) { SetVideoBackend(EMU_VIDEO_BACKEND_ACCURATE); return 0; }
+            if (id == IDM_VIDEO_FAST) { SetVideoBackend(EMU_VIDEO_BACKEND_FAST); return 0; }
 
             if (id == IDM_EMU_PAUSE) { TogglePause(); return 0; }
             if (id == IDM_EMU_RESET) {
@@ -1053,6 +1229,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             GetClientRect(hwnd, &rc);
             const int cw = rc.right - rc.left;
             const int ch = rc.bottom - rc.top;
+
+            // GLideN64 draws into its own child window over the client area.
+            // Painting the last software frame underneath it is wasted work
+            // (and would flash through if the child is ever absent).
+            if (g_gpu_video) {
+                FillRect(hdc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+                EndPaint(hwnd, &ps);
+                return 0;
+            }
 
             // Compose the whole frame offscreen, then present it with one
             // BitBlt. Drawing straight to the window DC (black fill, then a

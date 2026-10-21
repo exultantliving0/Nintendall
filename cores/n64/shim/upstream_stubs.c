@@ -41,6 +41,10 @@
 /* api/m64p_vidext.h                                                         */
 /* ------------------------------------------------------------------------- */
 
+#ifndef NINTENDALL_FAST_VIDEO
+/* When the GLideN64 bridge is linked into n64_core it provides the real
+ * implementations in n64_video_fast.cpp.  These no-ops are only for builds
+ * that deliberately omit the fast video stack. */
 m64p_error CALL VidExt_Init(void)
 {
     return M64ERR_SUCCESS;
@@ -136,6 +140,7 @@ uint32_t CALL VidExt_GL_GetDefaultFramebuffer(void)
 {
     return 0;
 }
+#endif /* !NINTENDALL_FAST_VIDEO */
 
 m64p_error CALL VidExt_VK_GetSurface(void **pSurface, void *pInstance)
 {

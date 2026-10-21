@@ -120,6 +120,16 @@ static EmuLoadResult n64_load_rom(EmuCoreHandle core,
     /* Config + battery saves live next to the frontend's other save data. */
     const char* data_path = c->config.save_dir && c->config.save_dir[0]
         ? c->config.save_dir : ".";
+
+    /* Pick the renderer before the core starts: the glue binds its video/RSP
+     * plugin tables once, and the fast path needs the parent HWND before
+     * gfx.romOpen() creates its WGL context. */
+    n64_glue_set_video_config(
+        c->config.video_backend == EMU_VIDEO_BACKEND_FAST,
+        c->config.window_handle,
+        c->config.video_width,
+        c->config.video_height);
+
     if (n64_glue_startup(data_path) != 0)
         return EMU_LOAD_ERROR_INTERNAL;
 

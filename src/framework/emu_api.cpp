@@ -45,6 +45,9 @@ extern "C" void emu_config_default(EmuConfig* config) {
     config->save_dir = "./saves";
     config->shader_dir = "./shaders";
     config->bios_dir = "./bios";
+
+    config->video_backend = EMU_VIDEO_BACKEND_ACCURATE;
+    config->window_handle = NULL;
 }
 
 // =============================================================================

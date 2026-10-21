@@ -44,6 +44,14 @@ typedef enum EmuSaveStateFormat {
     EMU_SAVE_FORMAT_COMMON,       // Unified format (future)
 } EmuSaveStateFormat;
 
+// Video backend for cores that ship more than one renderer.  The N64 core
+// keeps both stacks compiled in: accurate = angrylion + cxd4, fast =
+// GLideN64 + mupen64plus-rsp-hle.  Other cores ignore this.
+typedef enum EmuVideoBackend {
+    EMU_VIDEO_BACKEND_ACCURATE = 0,
+    EMU_VIDEO_BACKEND_FAST = 1,
+} EmuVideoBackend;
+
 // =============================================================================
 // Video/Audio/Input Callbacks
 // =============================================================================
@@ -95,6 +103,11 @@ typedef struct EmuConfig {
     // Core-specific options (opaque pointer)
     void* core_options;
     size_t core_options_size;
+
+    // Renderer selection and an optional native parent window for cores that
+    // render through the GPU themselves (currently the N64 fast stack).
+    int video_backend;          // EmuVideoBackend
+    void* window_handle;        // HWND on Windows, NULL when not applicable
 } EmuConfig;
 
 // Default configuration
