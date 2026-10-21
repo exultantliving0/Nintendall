@@ -306,7 +306,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     
     case WM_TIMER:
-        InvalidateRect(hwnd, nullptr, FALSE);
+        // (This used to invalidate the whole dialog every 60 ms, repainting a
+        // hundred-odd child windows 16 times a second for no reason - nothing
+        // on the dialog changes by itself; the edit boxes repaint when their
+        // text actually changes.)
         if (g_dlg.listening_type != 0 && !InputSystem::get().capturing()) {
             g_dlg.listening_type = 0;
             g_dlg.listening_slot = -1;
@@ -474,16 +477,14 @@ bool ShowInputDialog(HWND parent, EmuConsoleType console) {
     MSG msg;
 
     while (true) {
-        // While listening, keep polling input instead of blocking on messages.
-        if (g_dlg.listening_type != 0) {
-            if (!PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                InputSystem::get().poll();
-                Sleep(1);
-                continue;
-            }
-        } else {
-            if (GetMessageW(&msg, nullptr, 0, 0) <= 0) break;  // WM_QUIT or error
-        }
+        // This loop used to busy-poll at ~1 kHz while a binding was being
+        // captured (PeekMessage + Sleep(1) + InputSystem::poll()), which on a
+        // slower machine stole CPU from the emulator - the game visibly slowed
+        // down whenever the binding dialog was listening for a button.  It is
+        // not needed: the emulation thread calls InputSystem::poll() once per
+        // frame (its process_capture() picks the button up within a frame) and
+        // the WM_TIMER handler below notices that the capture finished.
+        if (GetMessageW(&msg, nullptr, 0, 0) <= 0) break;  // WM_QUIT or error
 
         InputSystem::get().poll();
 
@@ -515,6 +516,11 @@ bool ShowInputDialog(HWND parent, EmuConsoleType console) {
                     m.codes[slot][0] = (uint32_t)vk;
                     g_dlg.listening_type = 0;
                     g_dlg.listening_slot = -1;
+                    // Disarm the emulation thread's capture as well.  Usually
+                    // it wins the race and performs the binding itself, but if
+                    // this message path got here first the capture would stay
+                    // armed and bind the *next* key press too.
+                    in.cancel_capture();
                     UpdateDisplay();
                 }
             }

@@ -227,7 +227,7 @@ static void UpdateGamepadList() {
     if (!s_sdl_initialized) return;
 
     int count = 0;
-    const SDL_JoystickID* joysticks = SDL_GetJoysticks(&count);
+    SDL_JoystickID* joysticks = SDL_GetJoysticks(&count);
     if (!joysticks) return;
 
     bool seen_gp[INPUT_MAX_PORTS] = { false };
@@ -347,6 +347,11 @@ static void UpdateGamepadList() {
             s_joystick_num_hats[i] = 0;
         }
     }
+
+    // SDL_GetJoysticks() returns an SDL_malloc'd array that the caller owns;
+    // it used to be leaked on every call (once per emulated frame, and far
+    // more often than that from the dialog's old poll loop).
+    SDL_free(joysticks);
 }
 
 // Record the current physical state when capture starts.
@@ -1088,11 +1093,12 @@ int InputSystem::connected_pads() const {
     EnsureSDL();
     int n = 0;
     int count = 0;
-    const SDL_JoystickID* joysticks = SDL_GetJoysticks(&count);
+    SDL_JoystickID* joysticks = SDL_GetJoysticks(&count);
     if (joysticks) {
         for (int i = 0; i < count && i < INPUT_MAX_PORTS; i++) {
             if (SDL_IsGamepad(joysticks[i]) || (i < INPUT_MAX_PORTS)) n++; // count all joysticks
         }
+        SDL_free(joysticks);
     }
     return n;
 }
