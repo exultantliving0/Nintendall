@@ -44,7 +44,7 @@
 #define PRODUCT_NAME      WSTR_("Nintendall")
 #endif
 #ifndef PRODUCT_VERSION
-#define PRODUCT_VERSION   WSTR_("3.1.6")
+#define PRODUCT_VERSION   WSTR_("3.2.0")
 #endif
 #ifndef PRODUCT_PUBLISHER
 #define PRODUCT_PUBLISHER WSTR_("Nintendall")
