@@ -16,9 +16,9 @@
     {
       "name": "release",
       "inherits": "base",
-      "displayName": "Release (NES + SNES + GB/GBC/GBA)",
-      "description": "The default shipping build: NES (Nestopia), SNES (bsnes) and GB/GBC/GBA (mGBA).",
-      "cacheVariables": { "BUILD_SMOKE_TEST": "OFF" }
+      "displayName": "Release (NES + SNES + GB/GBC/GBA + N64)",
+      "description": "The default shipping build: NES (Nestopia), SNES (bsnes), GB/GBC/GBA (mGBA) and N64 (mupen64plus + angrylion).",
+      "cacheVariables": { "BUILD_SMOKE_TEST": "OFF", "BUILD_N64_CORE": "ON" }
     },
     {
       "name": "debug",
