@@ -289,7 +289,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     
     case WM_TIMER:
-        DebugLog("[Dialog] WM_TIMER fired, listening_type=%d capturing=%d\n", g_dlg.listening_type, InputSystem::get().capturing());
         InvalidateRect(hwnd, nullptr, FALSE);
         if (g_dlg.listening_type != 0 && !InputSystem::get().capturing()) {
             g_dlg.listening_type = 0;
@@ -454,18 +453,20 @@ bool ShowInputDialog(HWND parent, EmuConsoleType console) {
     UpdateWindow(hwnd);
     
     MSG msg;
-    DWORD last_poll = GetTickCount();
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        InputSystem::get().poll();
 
-        // Poll extra frequently while capturing (every ~16ms)
+    while (true) {
+        // While listening, keep polling input instead of blocking on messages.
         if (g_dlg.listening_type != 0) {
-            DWORD now = GetTickCount();
-            if (now - last_poll >= 16) {
-                last_poll = now;
+            if (!PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
                 InputSystem::get().poll();
+                Sleep(1);
+                continue;
             }
+        } else {
+            if (GetMessageW(&msg, nullptr, 0, 0) <= 0) break;  // WM_QUIT or error
         }
+
+        InputSystem::get().poll();
 
         // IsDialogMessageW intercepts certain keys before WM_KEYDOWN ever
         // reaches our window procedure: Enter becomes "click the default OK

@@ -1,4 +1,4 @@
-﻿// =============================================================================
+// =============================================================================
 //  Nintendall - input: gamepad polling, the button-mapping store and turbo
 //  See input_config.h for the physical-input code scheme.
 //  Now uses SDL3 GameController API + raw Joystick fallback for universal input.
@@ -13,8 +13,14 @@
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_joystick.h>
 
-// Simple file debug log
+// Simple file debug log, enabled with the NINTENDALL_DEBUG environment variable.
 void DebugLog(const char* fmt, ...) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        enabled = GetEnvironmentVariableA("NINTENDALL_DEBUG", nullptr, 0) > 0 ? 1 : 0;
+    }
+    if (!enabled) return;
+
     FILE* f = fopen("C:\\temp\\nintendall_input.log", "a");
     if (f) {
         va_list args;
@@ -149,6 +155,21 @@ static int s_joystick_num_hats[INPUT_MAX_PORTS] = { 0 };
 
 static int s_pad_pressed[INPUT_MAX_PORTS] = { 0 };
 static int s_pad_prev[INPUT_MAX_PORTS] = { 0 };
+
+// Capture edge detection: the first poll after begin_capture() records the
+// current state so a button that was already held (or a bad mapping that
+// reports a permanent press) cannot bind itself instantly.
+static bool s_cap_has_snapshot = false;
+static bool s_cap_prev_gp[INPUT_MAX_PORTS][16];
+static Uint8 s_cap_prev_btn[INPUT_MAX_PORTS][32];
+static Uint8 s_cap_prev_hat[INPUT_MAX_PORTS][4];
+
+// The joystick behind a port, whether SDL classified it as a gamepad or as a
+// plain joystick.  Raw-button bindings need this for both kinds of device.
+static SDL_Joystick* PortJoystick(int port) {
+    if (s_gamepads[port]) return SDL_GetGamepadJoystick(s_gamepads[port]);
+    return s_joysticks[port];
+}
 
 // =============================================================================
 // Helpers
@@ -285,6 +306,60 @@ static void UpdateGamepadList() {
     }
 }
 
+// Record the current physical state when capture starts.
+static void SnapshotCaptureState() {
+    memset(s_cap_prev_gp, 0, sizeof(s_cap_prev_gp));
+    memset(s_cap_prev_btn, 0, sizeof(s_cap_prev_btn));
+    memset(s_cap_prev_hat, 0, sizeof(s_cap_prev_hat));
+
+    for (int p = 0; p < INPUT_MAX_PORTS; p++) {
+        SDL_Gamepad* gp = s_gamepads[p];
+        if (gp) {
+            for (int b = 0; b < 16; b++)
+                s_cap_prev_gp[p][b] = SDL_GetGamepadButton(gp, (SDL_GamepadButton)b) ? true : false;
+        }
+        SDL_Joystick* joy = PortJoystick(p);
+        if (joy) {
+            int nbtn = SDL_GetNumJoystickButtons(joy);
+            for (int b = 0; b < nbtn && b < 32; b++)
+                s_cap_prev_btn[p][b] = SDL_GetJoystickButton(joy, b);
+
+            int nhats = SDL_GetNumJoystickHats(joy);
+            for (int h = 0; h < nhats && h < 4; h++)
+                s_cap_prev_hat[p][h] = SDL_GetJoystickHat(joy, h);
+        }
+    }
+}
+
+// Return the code of a newly pressed raw button/hat on this port, or 0.
+static uint32_t PollRawJoystickCapture(int p, SDL_Joystick* joy) {
+    int nbtn = SDL_GetNumJoystickButtons(joy);
+    for (int b = 0; b < nbtn && b < 32; b++) {
+        Uint8 pressed = SDL_GetJoystickButton(joy, b) ? 1 : 0;
+        if (pressed && !s_cap_prev_btn[p][b]) {
+            s_cap_prev_btn[p][b] = pressed;
+            return INPUT_XINPUT_BASE + (uint32_t)(p * 256 + 128 + b);
+        }
+        s_cap_prev_btn[p][b] = pressed;
+    }
+
+    int nhats = SDL_GetNumJoystickHats(joy);
+    for (int h = 0; h < nhats && h < 4; h++) {
+        Uint8 hat = SDL_GetJoystickHat(joy, h);
+        Uint8 prev = s_cap_prev_hat[p][h];
+        for (int d = 0; d < 4; d++) {
+            Uint8 mask = (d == 0) ? SDL_HAT_UP : (d == 1) ? SDL_HAT_DOWN
+                       : (d == 2) ? SDL_HAT_LEFT : SDL_HAT_RIGHT;
+            if ((hat & mask) && !(prev & mask)) {
+                s_cap_prev_hat[p][h] = hat;
+                return INPUT_XINPUT_BASE + (uint32_t)(p * 256 + 192 + h * 4 + d);
+            }
+        }
+        s_cap_prev_hat[p][h] = hat;
+    }
+    return 0;
+}
+
 // Helper: button name for GameController
 static const char* sdl_button_name(int sdl_btn) {
     for (int i = 0; i < SDL_BUTTON_COUNT; i++) {
@@ -319,11 +394,12 @@ InputSystem& InputSystem::get() {
 }
 
 void InputSystem::poll() {
-    static int poll_counter = 0;
-    if (++poll_counter % 100 == 0) {
-        DebugLog("[Poll] poll() called, frame=%u\n", g_frame);
-    }
     EnsureSDL();
+    // SDL only refreshes joystick/gamepad state when its events are pumped.
+    // This app uses a plain Win32 message loop, so nothing else calls this for
+    // us - without it every SDL_Get*Button() query returns stale (all-zero)
+    // state and controller capture appears dead.
+    SDL_UpdateJoysticks();
     UpdateGamepadList();
 
     g_frame++;
@@ -356,18 +432,6 @@ void InputSystem::poll() {
         // Raw Joystick path
         SDL_Joystick* joy = s_joysticks[port];
         if (joy) {
-            // Buttons
-            int nbtn = s_joystick_num_buttons[port];
-            for (int b = 0; b < nbtn && b < 32; b++) {
-                if (SDL_GetJoystickButton(joy, b)) {
-                    // Map raw button to a virtual EmuInputId starting at EMU_ID_JOYSTICK_UP (300)
-                    // We'll use EMU_ID_JOYSTICK_UP + b for raw buttons
-                    if (EMU_ID_JOYSTICK_UP + b < 332) { // safety
-                        g_pad_pressed[port] |= (1 << (EMU_ID_JOYSTICK_UP + b));
-                    }
-                }
-            }
-
             // Axes
             int naxis = s_joystick_num_axes[port];
             for (int a = 0; a < naxis && a < 6; a++) {
@@ -375,18 +439,8 @@ void InputSystem::poll() {
                 int16_t norm = (int16_t)(val * 128 / 32768);
                 const int deadzone = 32;
                 if (abs(norm) < deadzone) norm = 0;
-                // Store in g_analog starting at axis 6 (after standard 6 axes)
-                if (a < 6) this->g_analog[port][a] = (int8_t)norm; // overlap for now
-            }
-
-            // Hats (D-pad on many raw joysticks)
-            int nhats = s_joystick_num_hats[port];
-            for (int h = 0; h < nhats; h++) {
-                Uint8 hat = SDL_GetJoystickHat(joy, h);
-                if (hat & SDL_HAT_UP)    g_pad_pressed[port] |= (1 << (EMU_ID_JOYSTICK_UP + 32 + h*4 + 0));
-                if (hat & SDL_HAT_DOWN)  g_pad_pressed[port] |= (1 << (EMU_ID_JOYSTICK_UP + 32 + h*4 + 1));
-                if (hat & SDL_HAT_LEFT)  g_pad_pressed[port] |= (1 << (EMU_ID_JOYSTICK_UP + 32 + h*4 + 2));
-                if (hat & SDL_HAT_RIGHT) g_pad_pressed[port] |= (1 << (EMU_ID_JOYSTICK_UP + 32 + h*4 + 3));
+                // Raw sticks use the standard left/right analog slots.
+                this->g_analog[port][a] = (int8_t)norm;
             }
         }
     }
@@ -448,8 +502,8 @@ int InputSystem::is_pressed(unsigned port, EmuInputId id) const {
             // Also support raw joystick codes (port*256 + 128 + button/hat)
             if (b >= 128 && b < 192) {
                 int raw_b = b - 128;
-                SDL_Joystick* joy = s_joysticks[p];
-                if (joy && raw_b < s_joystick_num_buttons[p]) {
+                SDL_Joystick* joy = PortJoystick(p);
+                if (joy && raw_b < SDL_GetNumJoystickButtons(joy)) {
                     return SDL_GetJoystickButton(joy, raw_b) ? 1 : 0;
                 }
             }
@@ -457,8 +511,8 @@ int InputSystem::is_pressed(unsigned port, EmuInputId id) const {
                 int hat_raw = b - 192;
                 int hat_idx = hat_raw / 4;
                 int dir = hat_raw % 4;
-                SDL_Joystick* joy = s_joysticks[p];
-                if (joy && hat_idx < s_joystick_num_hats[p]) {
+                SDL_Joystick* joy = PortJoystick(p);
+                if (joy && hat_idx < SDL_GetNumJoystickHats(joy)) {
                     Uint8 hat = SDL_GetJoystickHat(joy, hat_idx);
                     Uint8 mask = (dir == 0) ? SDL_HAT_UP : (dir == 1) ? SDL_HAT_DOWN : (dir == 2) ? SDL_HAT_LEFT : SDL_HAT_RIGHT;
                     return (hat & mask) ? 1 : 0;
@@ -499,6 +553,7 @@ void InputSystem::stop_rumble(unsigned port) {
 void InputSystem::begin_capture(unsigned port, int slot) {
     g_capture_port = (int)(port & 3);
     g_capture_slot = slot;
+    s_cap_has_snapshot = false;
     memcpy(g_pad_prev, g_pad_pressed, sizeof(g_pad_prev));
     while (GetAsyncKeyState(VK_LBUTTON) & 1) { }
     for (int v = 1; v <= 0x1FF; v++) (void)GetAsyncKeyState(v);
@@ -512,15 +567,6 @@ void InputSystem::cancel_capture() {
 // Capture handling - called from input_dialog_list.cpp
 void InputSystem::process_capture() {
     if (!capturing()) return;
-
-    // DEBUG
-    static int capture_debug_counter = 0;
-    if (++capture_debug_counter % 100 == 0) {
-        char dbg[128];
-        snprintf(dbg, sizeof(dbg), "[Capture] Active: port=%d slot=%d type=%d keyset=%d\n",
-               g_capture_port, g_capture_slot, g_capture_type, g_capture_key_set);
-        DebugLog("%s", dbg);
-    }
 
     // Keyboard
     if (g_capture_type == 0 || g_capture_type == 1) {
@@ -542,77 +588,50 @@ void InputSystem::process_capture() {
         }
     }
 
-    // GameController
+    // Controllers: SDL gamepads first, then raw joystick data for buttons the
+    // SDL mapping doesn't cover (and for plain joysticks).
     if (g_capture_type == 0 || g_capture_type == 2) {
         EnsureSDL();
-        for (int p = 0; p < INPUT_MAX_PORTS; p++) {
-            if (!s_gamepads[p]) continue;
-            for (int b = 0; b < 16; b++) {
-                if (SDL_GetGamepadButton(s_gamepads[p], (SDL_GamepadButton)b)) {
-                    char dbg[64];
-                    snprintf(dbg, sizeof(dbg), "[Capture] GameController: port=%d btn=%d\n", p, b);
-                    DebugLog("%s", dbg);
-                    PortMapping& m = g_map[g_capture_port];
-                    uint32_t code = INPUT_XINPUT_BASE + (uint32_t)(p * 256 + b);
-                    if (g_capture_turbo) {
-                        m.turbo[g_capture_slot] = code;
-                        m.turbo_on[g_capture_slot] = 1;
-                    } else {
-                        m.codes[g_capture_slot][g_capture_key_set] = code;
-                    }
-                    cancel_capture();
-                    return;
-                }
-            }
-        }
-    }
 
-    // Raw Joystick fallback
-    if (g_capture_type == 0 || g_capture_type == 2) {
-        EnsureSDL();
+        // Ignore whatever is already held when capture begins.
+        if (!s_cap_has_snapshot) {
+            SnapshotCaptureState();
+            s_cap_has_snapshot = true;
+            return;
+        }
+
         for (int p = 0; p < INPUT_MAX_PORTS; p++) {
-            if (!s_joysticks[p]) continue;
-            // Buttons
-            for (int b = 0; b < s_joystick_num_buttons[p] && b < 32; b++) {
-                if (SDL_GetJoystickButton(s_joysticks[p], b)) {
-                    char dbg[64];
-                    snprintf(dbg, sizeof(dbg), "[Capture] Raw Joystick: port=%d btn=%d\n", p, b);
-                    DebugLog("%s", dbg);
-                    PortMapping& m = g_map[g_capture_port];
-                    uint32_t code = INPUT_XINPUT_BASE + (uint32_t)(p * 256 + 128 + b);
-                    if (g_capture_turbo) {
-                        m.turbo[g_capture_slot] = code;
-                        m.turbo_on[g_capture_slot] = 1;
-                    } else {
-                        m.codes[g_capture_slot][g_capture_key_set] = code;
+            uint32_t code = 0;
+
+            SDL_Gamepad* gp = s_gamepads[p];
+            if (gp) {
+                for (int b = 0; b < 16; b++) {
+                    bool pressed = SDL_GetGamepadButton(gp, (SDL_GamepadButton)b);
+                    if (pressed && !s_cap_prev_gp[p][b]) {
+                        code = INPUT_XINPUT_BASE + (uint32_t)(p * 256 + b);
+                        break;
                     }
-                    cancel_capture();
-                    return;
+                    s_cap_prev_gp[p][b] = pressed;
                 }
             }
-            // Hats
-            for (int h = 0; h < s_joystick_num_hats[p]; h++) {
-                Uint8 hat = SDL_GetJoystickHat(s_joysticks[p], h);
-                if (hat) {
-                    for (int d = 0; d < 4; d++) {
-                        Uint8 mask = (d == 0) ? SDL_HAT_UP : (d == 1) ? SDL_HAT_DOWN : (d == 2) ? SDL_HAT_LEFT : SDL_HAT_RIGHT;
-                        if (hat & mask) {
-                            char dbg[64];
-                            snprintf(dbg, sizeof(dbg), "[Capture] Raw Joystick Hat: port=%d hat=%d dir=%d\n", p, h, d);
-                            DebugLog("%s", dbg);
-                            PortMapping& m = g_map[g_capture_port];
-                            uint32_t code = INPUT_XINPUT_BASE + (uint32_t)(p * 256 + 192 + h * 4 + d);
-                            if (g_capture_turbo) {
-                                m.turbo[g_capture_slot] = code;
-                                m.turbo_on[g_capture_slot] = 1;
-                            } else {
-                                m.codes[g_capture_slot][g_capture_key_set] = code;
-                            }
-                            cancel_capture();
-                            return;
-                        }
-                    }
+
+            if (!code) {
+                SDL_Joystick* joy = PortJoystick(p);
+                if (joy) code = PollRawJoystickCapture(p, joy);
+            }
+
+            if (code) {
+                DebugLog("[Capture] bound port=%d slot=%d code=0x%x\n",
+                         g_capture_port, g_capture_slot, code);
+                PortMapping& m = g_map[g_capture_port];
+                if (g_capture_turbo) {
+                    m.turbo[g_capture_slot] = code;
+                    m.turbo_on[g_capture_slot] = 1;
+                } else {
+                    m.codes[g_capture_slot][g_capture_key_set] = code;
                 }
+                cancel_capture();
+                return;
             }
         }
     }
@@ -641,16 +660,16 @@ int InputSystem::turbo_edge(unsigned port, int slot) const {
                 if (gp && SDL_GetGamepadButton(gp, (SDL_GamepadButton)b)) held = 1;
             } else if (b >= 128 && b < 160) {
                 int raw_b = b - 128;
-                SDL_Joystick* joy = s_joysticks[p];
-                if (joy && raw_b < s_joystick_num_buttons[p]) {
+                SDL_Joystick* joy = PortJoystick(p);
+                if (joy && raw_b < SDL_GetNumJoystickButtons(joy)) {
                     held = SDL_GetJoystickButton(joy, raw_b) ? 1 : 0;
                 }
             } else if (b >= 192 && b < 256) {
                 int hat_raw = b - 192;
                 int hat_idx = hat_raw / 4;
                 int dir = hat_raw % 4;
-                SDL_Joystick* joy = s_joysticks[p];
-                if (joy && hat_idx < s_joystick_num_hats[p]) {
+                SDL_Joystick* joy = PortJoystick(p);
+                if (joy && hat_idx < SDL_GetNumJoystickHats(joy)) {
                     Uint8 hat = SDL_GetJoystickHat(joy, hat_idx);
                     Uint8 mask = (dir == 0) ? SDL_HAT_UP : (dir == 1) ? SDL_HAT_DOWN : (dir == 2) ? SDL_HAT_LEFT : SDL_HAT_RIGHT;
                     held = (hat & mask) ? 1 : 0;
