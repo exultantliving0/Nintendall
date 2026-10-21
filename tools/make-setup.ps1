@@ -134,6 +134,7 @@ $files = @(
     @{ From = $uninstExe;                          To = 'Uninstall.exe' }
     @{ From = (Join-Path $repo 'README.md');       To = 'README.md' }
     @{ From = (Join-Path $repo 'assets\config.ini');   To = 'assets\config.ini' }
+    @{ From = (Join-Path $repo 'assets\nintendall-512.png'); To = 'assets\nintendall-512.png' }
     @{ From = (Join-Path $repo 'docs\ARCHITECTURE.md'); To = 'docs\ARCHITECTURE.md' }
 )
 foreach ($f in $files) {
