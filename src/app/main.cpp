@@ -575,7 +575,17 @@ static DWORD WINAPI EmuThreadProc(LPVOID param) {
 // the same wherever the game was loaded from.
 static void CurrentRomSavePath(char* out, size_t out_size) {
     const char* sub = emu_console_folder_name(g_console);
-    _snprintf(out, out_size - 1, "%s\\%s\\%s.sav", g_save_dir, sub, g_rom_base);
+
+    // Create the per-console folder on first use.  mGBA opens a GBA .sav with
+    // O_CREAT while the game is loading; if the parent folder is missing the
+    // open fails and the core silently falls back to anonymous save memory,
+    // so in-game saves never reach disk.
+    char dir[MAX_PATH * 2];
+    _snprintf(dir, sizeof(dir) - 1, "%s\\%s", g_save_dir, sub);
+    dir[sizeof(dir) - 1] = 0;
+    emu_mkdir_p(dir);
+
+    _snprintf(out, out_size - 1, "%s\\%s.sav", dir, g_rom_base);
     out[out_size - 1] = 0;
 }
 

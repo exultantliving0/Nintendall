@@ -490,13 +490,11 @@ static int gb_load_sram(EmuCoreHandle core, const char* path) {
         // is what its own frontends do) solves that -- the core keeps the file
         // mapped and switches between 512K and 1M flash by itself when the
         // game asks for it.
-        FILE* f = fopen(path, "rb");
-        if (!f) return -1;
-        fseek(f, 0, SEEK_END);
-        long size = ftell(f);
-        fclose(f);
-        if (size <= 0) return -1;
-
+        //
+        // Attach the file even when it does not exist yet.  mCoreLoadSaveFile
+        // opens with O_CREAT, and this is what makes a new game use the file
+        // instead of anonymous memory; otherwise the first in-game save never
+        // reaches disk.
         if (!mCoreLoadSaveFile(core->core, path, false)) return -1;
         core->gba_save_attached = true;
         snprintf(core->gba_save_path, sizeof(core->gba_save_path), "%s", path);
