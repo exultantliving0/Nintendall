@@ -40,6 +40,7 @@ struct DialogState {
     bool accepted;
     
     std::vector<ButtonRow> buttons;
+    std::vector<HWND> labels;     // header and row labels recreated by Layout
     std::vector<HWND> edit_kb;    // edit boxes for keyboard
     std::vector<HWND> edit_gp;    // edit boxes for gamepad
     std::vector<HWND> btn_kb;     // buttons to capture keyboard
@@ -49,6 +50,54 @@ struct DialogState {
 DialogState g_dlg;
 HFONT g_ui_font = nullptr;
 HFONT g_big_font = nullptr;
+
+// Dialog geometry, shared by LayoutControls and the initial-size calculation.
+// The N64 layout has 16 rows, so the old fixed 720x600 client area cut off the
+// bottom rows until the user manually enlarged the window.
+constexpr int kDialogWidth    = 720;
+constexpr int kDialogMinHeight = 600;
+constexpr int kRowsTop        = 80;
+constexpr int kRowHeight      = 28;
+constexpr int kRowSpacing     = 8;
+constexpr int kFooterSpace    = 60;
+
+int RequiredClientHeight(int rows) {
+    if (rows < 1) rows = 1;
+    int h = kRowsTop + rows * (kRowHeight + kRowSpacing) + kFooterSpace;
+    return h < kDialogMinHeight ? kDialogMinHeight : h;
+}
+
+bool FitWindowToConsole(HWND hwnd) {
+    const PadLayout* pad = pad_layout_for(g_dlg.console);
+    int rows = pad ? pad->button_count : 0;
+    int wanted_h = RequiredClientHeight(rows);
+
+    RECT client;
+    GetClientRect(hwnd, &client);
+    if (client.bottom - client.top >= wanted_h) return false;
+
+    RECT outer;
+    GetWindowRect(hwnd, &outer);
+
+    RECT r = { 0, 0, kDialogWidth, wanted_h };
+    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+    int outer_w = r.right - r.left;
+    int outer_h = r.bottom - r.top;
+
+    // Grow downward, but keep the whole window inside the work area.
+    RECT work;
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    int x = outer.left;
+    int y = outer.top;
+    if (y + outer_h > work.bottom) y = work.bottom - outer_h;
+    if (y < work.top) y = work.top;
+
+    if (!SetWindowPos(hwnd, nullptr, x, y, outer_w, outer_h,
+                      SWP_NOZORDER | SWP_NOACTIVATE)) {
+        return false;
+    }
+    return true;
+}
 
 void BuildButtonList() {
     g_dlg.buttons.clear();
@@ -138,10 +187,12 @@ void CancelListening() {
 }
 
 void CleanupChildren() {
+    for (auto h : g_dlg.labels) if (h) DestroyWindow(h);
     for (auto h : g_dlg.edit_kb) if (h) DestroyWindow(h);
     for (auto h : g_dlg.edit_gp) if (h) DestroyWindow(h);
     for (auto h : g_dlg.btn_kb) if (h) DestroyWindow(h);
     for (auto h : g_dlg.btn_gp) if (h) DestroyWindow(h);
+    g_dlg.labels.clear();
     g_dlg.edit_kb.clear();
     g_dlg.edit_gp.clear();
     g_dlg.btn_kb.clear();
@@ -154,13 +205,13 @@ void LayoutControls() {
     RECT rc;
     GetClientRect(g_dlg.hwnd, &rc);
     
-    int y = 80; // Start below header
+    int y = kRowsTop; // Start below header
     int left_margin = 20;
     int button_name_w = 120;
     int edit_w = 160;
     int btn_w = 80;
-    int row_h = 28;
-    int spacing = 8;
+    int row_h = kRowHeight;
+    int spacing = kRowSpacing;
     
     // Create header labels
     HWND lbl_btn = CreateWindowExW(0, L"STATIC", L"Button", WS_CHILD | WS_VISIBLE | SS_LEFT,
@@ -170,6 +221,9 @@ void LayoutControls() {
     HWND lbl_gp = CreateWindowExW(0, L"STATIC", L"Controller", WS_CHILD | WS_VISIBLE | SS_LEFT,
         left_margin + button_name_w + spacing*2 + edit_w + btn_w, y - 20, edit_w + btn_w + spacing, 16, g_dlg.hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
     
+    g_dlg.labels.push_back(lbl_btn);
+    g_dlg.labels.push_back(lbl_kb);
+    g_dlg.labels.push_back(lbl_gp);
     SendMessageW(lbl_btn, WM_SETFONT, (WPARAM)g_ui_font, TRUE);
     SendMessageW(lbl_kb, WM_SETFONT, (WPARAM)g_ui_font, TRUE);
     SendMessageW(lbl_gp, WM_SETFONT, (WPARAM)g_ui_font, TRUE);
@@ -188,6 +242,7 @@ void LayoutControls() {
             left_margin, cur_y + 4, button_name_w, 20, g_dlg.hwnd, (HMENU)(2000 + (int)i), GetModuleHandle(nullptr), nullptr);
         SetWindowTextA(lbl, g_dlg.buttons[i].name);
         SendMessageW(lbl, WM_SETFONT, (WPARAM)g_ui_font, TRUE);
+        g_dlg.labels.push_back(lbl);
         
         // Keyboard edit box
         g_dlg.edit_kb[i] = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_READONLY | ES_AUTOHSCROLL,
@@ -377,7 +432,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     case 5: g_dlg.console = EMU_CONSOLE_NINTENDO_64; break;
                 }
                 CancelListening();
-                LayoutControls();
+                // Grow if the newly selected console has more binding rows
+                // (N64 has 16).  A successful resize sends WM_SIZE, which
+                // re-runs LayoutControls with the new client area.
+                if (!FitWindowToConsole(hwnd)) {
+                    LayoutControls();
+                }
             }
             return 0;
         case IDC_PORT:
@@ -430,6 +490,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // Child windows are destroyed automatically when the dialog window is
         // destroyed - don't double-destroy them here.  Just clear our bookkeeping,
         // then post a quit message so ShowInputDialog's GetMessageW loop exits.
+        g_dlg.labels.clear();
         g_dlg.edit_kb.clear();
         g_dlg.edit_gp.clear();
         g_dlg.btn_kb.clear();
@@ -443,7 +504,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 } // namespace
 
 bool ShowInputDialog(HWND parent, EmuConsoleType console) {
-    ZeroMemory(&g_dlg, sizeof(g_dlg));
+    // DialogState holds std::vectors; assignment (not ZeroMemory) releases any
+    // buffers left over from a previous invocation.
+    g_dlg = DialogState();
     g_dlg.console = console;
     g_dlg.port = 0;
     g_dlg.listening_type = 0;
@@ -461,7 +524,12 @@ bool ShowInputDialog(HWND parent, EmuConsoleType console) {
     wc.lpszClassName = L"NintendallControllerConfig";
     RegisterClassExW(&wc);
     
-    RECT r = { 0, 0, 720, 600 };
+    // Size the client area to the selected console's binding list.  NES and
+    // the handhelds stay at the 600 px minimum; N64 needs 716 px for its 16
+    // rows plus the footer.
+    const PadLayout* pad = pad_layout_for(console);
+    int rows = pad ? pad->button_count : 0;
+    RECT r = { 0, 0, kDialogWidth, RequiredClientHeight(rows) };
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
     
     HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_APPWINDOW,
